@@ -1,0 +1,50 @@
+/* SPDX-License-Identifier: MIT */
+/* PocketMZ game menu styles. No filters, no animations: built for a weak GPU. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #14161c; color: #e8eaf0;
+  font-family: "Noto Sans CJK JP", "Noto Sans CJK SC", "DejaVu Sans", sans-serif; }
+body { font-size: 14px; user-select: none; cursor: default; }
+[hidden] { display: none !important; }
+#app { display: flex; flex-direction: column; width: 100%; height: 100%; padding: 8px 12px 6px; }
+
+#header { display: flex; align-items: center; gap: 12px; height: 32px; flex: none; }
+#brand { font-size: 16px; font-weight: bold; color: #4f8cff; flex: none; }
+#tabbar { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.hintkey { flex: none; font-size: 10px; color: #9aa3b5; border: 1px solid #3a4054; border-radius: 4px; padding: 1px 4px; }
+#tabs { display: flex; gap: 4px; flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; }
+.tab { flex: none; padding: 4px 10px; border-radius: 12px; font-size: 13px; color: #9aa3b5; background: #1d212b; }
+.tab.on { background: #4f8cff; color: #fff; font-weight: bold; }
+
+#grid { flex: 1; min-height: 0; margin-top: 6px; overflow: hidden; display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: min-content; align-content: start; gap: 8px 10px; }
+.card { background: #232733; border: 2px solid transparent; border-radius: 6px; padding: 4px; min-width: 0; position: relative; }
+.card.sel { border-color: #4f8cff; background: #2c3345; }
+.cover { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 3px; background: #1a1d26; }
+.cover img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; }
+.cover .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 8px;
+  text-align: center; font-size: 14px; font-weight: bold; line-height: 1.25; color: #fff; overflow: hidden; word-break: break-all; }
+.ctitle { margin-top: 3px; height: 20px; line-height: 20px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.star { position: absolute; right: 8px; top: 7px; color: #ffcf33; font-size: 16px; line-height: 1; background: #000a; border-radius: 3px; padding: 1px 3px; }
+
+#empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  text-align: center; padding: 0 24px; font-size: 16px; line-height: 1.6; color: #9aa3b5; }
+#empty .err { color: #ff6b6b; font-size: 13px; word-break: break-all; }
+
+#info { flex: none; margin-top: 6px; padding: 6px 8px; background: #1d212b; border-radius: 6px; min-height: 96px; }
+#ititle { font-size: 16px; font-weight: bold; line-height: 20px; max-height: 40px; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+#ibadges { display: flex; flex-wrap: nowrap; gap: 5px; margin-top: 4px; overflow: hidden; white-space: nowrap; }
+.badge { flex: none; font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 3px; background: #2c3345; color: #cfd5e3; }
+.badge.kind { background: #4f8cff; color: #fff; }
+.badge.warn { background: #b03a3a; color: #fff; }
+#iwarn { color: #ff6b6b; font-size: 12px; line-height: 16px; margin-top: 3px; }
+#iwarn:empty { display: none; }
+#ihints { font-size: 12px; color: #9aa3b5; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#overlay { position: fixed; inset: 0; background: #14161cf2; display: flex; align-items: center; justify-content: center; z-index: 10; }
+#overlay.dim { background: #000000b0; }
+.dlg { background: #232733; border: 2px solid #4f8cff; border-radius: 8px; padding: 18px 22px; max-width: 86%; text-align: center; font-size: 15px; line-height: 1.6; }
+.dlg .btns { display: flex; justify-content: center; gap: 16px; margin-top: 14px; }
+.dlg .btn { min-width: 76px; padding: 4px 14px; border-radius: 6px; background: #1d212b; border: 2px solid transparent; color: #9aa3b5; }
+.dlg .btn.on { border-color: #4f8cff; background: #4f8cff; color: #fff; font-weight: bold; }
+.launch { font-size: 18px; text-align: center; padding: 0 24px; }

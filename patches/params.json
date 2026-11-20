@@ -1,0 +1,8 @@
+{
+  "_comment": "Plugin parameter overrides applied to the thin copy's js/plugins.js by pocketmz-mkgame.sh (original files untouched).",
+  "LL_StandingPicture": {
+    "bootCachePictures": "false",
+    "catheBootPicture": "false"
+  },
+  "_comment_LL": "LL_StandingPicture: newer versions read bootCachePictures, older ones catheBootPicture (sic); both off = standing pictures load when first shown instead of all at boot."
+}
