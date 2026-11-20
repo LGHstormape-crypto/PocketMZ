@@ -4,6 +4,14 @@
 
 PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关。RPG Maker 是其商标。
 
+## 声明
+
+- **本项目的代码 100% 由 AI 编写**（Anthropic 的 Claude，通过 Claude Code）。人类维护者负责提出需求、在真机上试玩和测试、做出取舍决定，但没有手写代码。代码虽经过实机测试，仍可能有 AI 生成代码常见的问题，欢迎通过 Issue 反馈。
+- **按现状提供，不做任何担保**（见 MIT 许可证）。使用风险自负：可能出现游戏卡死、掌机重启或存档损坏等情况，请自行备份重要存档（PocketMZ 每次启动游戏前会自动备份存档，保留最近 5 份，可在游戏内 PocketMZ 菜单中恢复）。
+- **不包含任何游戏**。请只运行你合法拥有的游戏，本项目不支持也不协助任何盗版行为。PocketMZ 不修改原游戏文件。
+- 与 KADOKAWA / Gotcha Gotcha Games（RPG Maker）、GameKiddy（GKD 掌机）、ROCKNIX 及 NW.js 项目均无关联，也未获得其认可。
+- 补丁针对 GKD Mini Plus（RK3566、1 GB 内存）调整，在其他设备上的表现没有保证。
+
 ## 状态
 
 - 已在 GKD Mini Plus 上运行，需要 panfrost GPU 驱动。
@@ -73,6 +81,14 @@ MIT，见 [LICENSE](LICENSE)。
 PocketMZ runs RPG Maker MV and MZ games on handheld devices. It bundles NW.js (arm64) with a Debian runtime, and adds runtime patches (as RPG Maker plugins loaded at game start) for 1 GB of RAM and the RK3566 SoC. It targets the GKD Mini Plus running ROCKNIX. Games are not included. Original game folders are never modified; each game gets a writable thin copy with symlinks, and all fixes are runtime patches.
 
 PocketMZ is an unofficial project, not affiliated with KADOKAWA or Gotcha Gotcha Games. RPG Maker is their trademark.
+
+**Disclaimer:**
+
+- **100% of the code in this project was written by AI** (Anthropic's Claude, through Claude Code). The human maintainer set the goals, played and tested on real hardware and made the decisions, but wrote no code. It has been tested on the device, but may still contain the kinds of mistakes AI-written code can have; please report them in Issues.
+- **Provided as is, without warranty of any kind** (see the MIT license). Use at your own risk: games may hang, the handheld may reboot or saves may be damaged. Back up important saves (PocketMZ also backs up the saves before each start, keeps the 5 newest, and the in-game PocketMZ menu can restore them).
+- **No games are included.** Only run games you legally own; this project does not support piracy. PocketMZ never modifies the original game files.
+- Not affiliated with or endorsed by KADOKAWA / Gotcha Gotcha Games (RPG Maker), GameKiddy (GKD handhelds), ROCKNIX or the NW.js project.
+- The patches are tuned for the GKD Mini Plus (RK3566, 1 GB RAM); behaviour on other devices is not guaranteed.
 
 **Status:** Works on the GKD Mini Plus with the panfrost GPU driver. Other RK3566 ROCKNIX devices are untested.
 
