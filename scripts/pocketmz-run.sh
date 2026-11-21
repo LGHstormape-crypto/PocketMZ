@@ -34,7 +34,8 @@ WEB=""; [ ! -f "$SRC/index.html" ] && [ -f "$SRC/www/index.html" ] && WEB="www/"
 LOG="$RZ/games/$ID/run.log"
 # per-game settings: games/<id>/env (shell variables, e.g. POCKETMZ_MEM_MAX=700, POCKETMZ_EXTRA_ARGS=...),
 # games/<id>/pocketmz.gptk (button mapping instead of the default pocketmz.gptk)
-[ -f "$RZ/games/$ID/env" ] && . "$RZ/games/$ID/env"
+# exported (set -a): pocketmz-chroot.sh passes every exported POCKETMZ_* variable into the game
+[ -f "$RZ/games/$ID/env" ] && { set -a; . "$RZ/games/$ID/env"; set +a; }
 # settings written with the old prefix (before the PocketMZ name) still count
 for v in STOP_ES MEM_MAX MEM_HIGH SWAP_MAX SWAPPINESS EXTRA_ARGS JS_FLAGS RENDER_SCALE IMG_SCALE SUBSET_FONTS; do
   eval "[ -z \"\$POCKETMZ_$v\" ] && [ -n \"\$RPGMZ_$v\" ] && POCKETMZ_$v=\"\$RPGMZ_$v\""

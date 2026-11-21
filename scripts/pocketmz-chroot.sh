@@ -62,6 +62,9 @@ case "$1" in
   mount) do_mount ;;
   umount) do_umount "$2" ;;
   run) shift; do_mount
+       # env -i keeps the game environment clean; exported POCKETMZ_* switches (games/<id>/env, tests)
+       # go in as NAME=value arguments after the defaults below, so they win
+       for n in $(env | sed -n 's/^\(POCKETMZ_[A-Za-z0-9_]*\)=.*/\1/p'); do eval "v=\${$n}"; set -- "$n=$v" "$@"; done
        exec chroot "$ROOT" /usr/bin/env -i HOME=/root PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
          MALLOC_ARENA_MAX=2 MALLOC_MMAP_THRESHOLD_=131072 MALLOC_TRIM_THRESHOLD_=131072 \
          POCKETMZ_RENDER_SCALE="${POCKETMZ_RENDER_SCALE:-auto}" POCKETMZ_IMG_SCALE="${POCKETMZ_IMG_SCALE:-auto}" POCKETMZ_UI_LANG="${POCKETMZ_UI_LANG:-zh_CN}" TZ="${TZ:-UTC}" POCKETMZ_DEFAULT_FPS="${POCKETMZ_DEFAULT_FPS:-30}" LANG=C.UTF-8 LC_ALL=C.UTF-8 LANGUAGE="${POCKETMZ_LANG:-ja}" FC_LANG="${POCKETMZ_LANG:-ja}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}" \

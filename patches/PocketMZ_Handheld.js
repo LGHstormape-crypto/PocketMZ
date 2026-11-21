@@ -1486,6 +1486,177 @@
         };
     }
 
+    // 23. Tilemap atlas sized to the tileset. MZ's Tilemap.Renderer always allocates 3 render
+    //     textures of 2048x2048 RGBA (48 MB of shared GPU memory), though most tilesets are 768 px
+    //     wide and atlas 2 holds only one image, and it uploads a 4 MB zero buffer before every
+    //     image. Fix: each atlas is allocated just big enough for its quadrants (multiple of 16),
+    //     the shader divides by a per-atlas size uniform instead of 2048.0, only the part of a
+    //     quadrant that the previous image covered and the new one does not is cleared, and the
+    //     second layer's update of the same list in the same frame is skipped. The quadrant layout
+    //     (and so the vertex data) is unchanged. POCKETMZ_TILE_ATLAS=off disables it.
+    //     window.PMZ_TILE = { updates, skipped, cleared, resized, bytes() } for diagnostics.
+    if (window.Tilemap && Tilemap.Renderer && Tilemap.Layer && Tilemap.Layer.MAX_GL_TEXTURES === 3 &&
+        window.PIXI &&
+        String((window.process && process.env && process.env.POCKETMZ_TILE_ATLAS) || "on").toLowerCase() !== "off" &&
+        String(Tilemap.Renderer.prototype._createShader).includes("textureCoord / 2048.0") &&
+        String(Tilemap.Renderer.prototype.updateTextures).includes("1024 * (i % 2)") &&
+        String(Tilemap.Renderer.prototype._createInternalTextures).includes("resize(2048, 2048)")) {
+        const PMZ_TILE = window.PMZ_TILE = {
+            updates: 0, skipped: 0, cleared: 0, resized: 0,
+            bytes: () => {
+                const t = (lastInst && lastInst._internalTextures) || [];
+                let n = 0;
+                for (const b of t) n += b.width * b.height * 4;
+                return n;
+            }
+        };
+        const TR = Tilemap.Renderer.prototype;
+        let lastInst = null;
+        const MAX_SLOTS = 12;
+        const round16 = v => Math.min(2048, Math.max(16, Math.ceil(v / 16) * 16));
+        const imgSize = img => {
+            if (!img) return [0, 0];
+            const w = img.naturalWidth || img.width || 0;
+            const h = img.naturalHeight || img.height || 0;
+            return [w, h];
+        };
+        TR._createShader = function() {
+            const vertexSrc =
+                "attribute float aTextureId;" +
+                "attribute vec4 aFrame;" +
+                "attribute vec2 aSource;" +
+                "attribute vec2 aDest;" +
+                "uniform mat3 uProjectionMatrix;" +
+                "varying vec4 vFrame;" +
+                "varying vec2 vTextureCoord;" +
+                "varying float vTextureId;" +
+                "void main(void) {" +
+                "  vec3 position = uProjectionMatrix * vec3(aDest, 1.0);" +
+                "  gl_Position = vec4(position, 1.0);" +
+                "  vFrame = aFrame;" +
+                "  vTextureCoord = aSource;" +
+                "  vTextureId = aTextureId;" +
+                "}";
+            // highp: with PIXI's default mediump (fp16 on Mali) "coord / 1792.0" is off by up to ~1 texel
+            // (thin dark lines at tile edges); stock got away with it because /2048 is exact
+            const fragmentSrc =
+                "precision highp float;" +
+                "varying vec4 vFrame;" +
+                "varying vec2 vTextureCoord;" +
+                "varying float vTextureId;" +
+                "uniform sampler2D uSampler0;" +
+                "uniform sampler2D uSampler1;" +
+                "uniform sampler2D uSampler2;" +
+                "uniform vec2 uSize0;" +
+                "uniform vec2 uSize1;" +
+                "uniform vec2 uSize2;" +
+                "void main(void) {" +
+                "  vec2 textureCoord = clamp(vTextureCoord, vFrame.xy, vFrame.zw);" +
+                "  int textureId = int(vTextureId);" +
+                "  vec4 color;" +
+                "  if (textureId < 0) {" +
+                "    color = vec4(0.0, 0.0, 0.0, 0.5);" +
+                "  } else if (textureId == 0) {" +
+                "    color = texture2D(uSampler0, textureCoord / uSize0);" +
+                "  } else if (textureId == 1) {" +
+                "    color = texture2D(uSampler1, textureCoord / uSize1);" +
+                "  } else if (textureId == 2) {" +
+                "    color = texture2D(uSampler2, textureCoord / uSize2);" +
+                "  }" +
+                "  gl_FragColor = color;" +
+                "}";
+            return new PIXI.Shader(PIXI.Program.from(vertexSrc, fragmentSrc), {
+                uSampler0: 0, uSampler1: 0, uSampler2: 0,
+                uSize0: new Float32Array([2048, 2048]),
+                uSize1: new Float32Array([2048, 2048]),
+                uSize2: new Float32Array([2048, 2048]),
+                uProjectionMatrix: new PIXI.Matrix()
+            });
+        };
+        TR._createInternalTextures = function() {
+            this._destroyInternalTextures();
+            for (let i = 0; i < Tilemap.Layer.MAX_GL_TEXTURES; i++) {
+                const baseTexture = new PIXI.BaseRenderTexture();
+                baseTexture.resize(16, 16);
+                baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                this._internalTextures.push(baseTexture);
+            }
+            this._pmzSlots = [];
+            this._pmzLast = null;
+            lastInst = this;
+        };
+        TR.updateTextures = function(renderer, images) {
+            const frame = window.Graphics ? Graphics.frameCount : 0;
+            const last = this._pmzLast;
+            if (last && last.frame === frame && last.list.length === images.length &&
+                last.list.every((img, i) => img === images[i])) {
+                PMZ_TILE.skipped++;
+                return;
+            }
+            this._pmzLast = { frame: frame, list: images.slice() };
+            PMZ_TILE.updates++;
+            const gl = renderer.gl;
+            const format = gl.RGBA;
+            const type = gl.UNSIGNED_BYTE;
+            const n = Math.min(images.length, MAX_SLOTS);
+            const slots = this._pmzSlots || (this._pmzSlots = []);
+            const sizes = [];
+            for (let i = 0; i < n; i++) sizes.push(imgSize(images[i]));
+            for (let t = 0; t < 3; t++) {
+                const atlas = this._internalTextures[t];
+                let needW = 0, needH = 0;
+                for (let q = 0; q < 4; q++) {
+                    const i = 4 * t + q;
+                    if (i >= n) break;
+                    needW = Math.max(needW, 1024 * (q % 2) + sizes[i][0]);
+                    needH = Math.max(needH, 1024 * ((q >> 1) % 2) + sizes[i][1]);
+                }
+                if (4 * t >= n) continue;
+                needW = round16(needW);
+                needH = round16(needH);
+                let fresh = false;
+                if (atlas.width !== needW || atlas.height !== needH) {
+                    atlas.resize(needW, needH);
+                    renderer.texture.bind(atlas, 0);
+                    for (let q = 0; q < 4; q++) slots[4 * t + q] = null;
+                    PMZ_TILE.resized++;
+                    fresh = true;
+                }
+                for (let q = 0; q < 4; q++) {
+                    const i = 4 * t + q;
+                    if (i >= n) break;
+                    const x = 1024 * (q % 2);
+                    const y = 1024 * ((q >> 1) % 2);
+                    const w = sizes[i][0], h = sizes[i][1];
+                    const prev = slots[i];
+                    if (!fresh && prev && (prev.w > w || prev.h > h) && prev.w > 0 && prev.h > 0) {
+                        renderer.texture.bind(atlas, 0);
+                        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
+                        gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, prev.w, prev.h, format, type,
+                            this._clearBuffer.subarray(0, prev.w * prev.h * 4));
+                        PMZ_TILE.cleared++;
+                    }
+                    if (w > 0 && h > 0) {
+                        renderer.texture.bind(atlas, 0);
+                        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
+                        gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, format, type, images[i]);
+                    }
+                    slots[i] = { w: w, h: h };
+                }
+            }
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
+            const u = this._shader.uniforms;
+            for (let t = 0; t < 3; t++) {
+                const a = this._internalTextures[t];
+                const v = u["uSize" + t];
+                v[0] = a.width;
+                v[1] = a.height;
+                u["uSize" + t] = v;
+            }
+            renderer.shader.bind(this._shader);
+        };
+    }
+
     // 7. Audio sample rate
     if (AUDIO_SAMPLE_RATE > 0) {
         WebAudio._createContext = function() {
