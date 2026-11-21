@@ -34,7 +34,7 @@ PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关
   - F2 + 上 / 下：调节音量
 - **游戏内 PocketMZ 菜单**：帧率 30 / 60、速度、帧数显示、音量、渲染分辨率、游戏中关闭 ES（按游戏设置）、按键映射、一次性图片预处理、存档备份。
 - **性能**：按屏幕分辨率渲染；默认 30 fps；大图在加载时缩小并保存持久缓存；窗口内容按显示比例绘制；跳过屏幕外的角色精灵；菜单和战斗的背景快照预先模糊。
-- **内存保护**：cgroup 内存上限；看门狗在掌机因交换分区卡死之前结束游戏；修复了 MV / MZ 引擎中的若干内存泄漏。
+- **内存保护**：cgroup 内存上限；看门狗在掌机因交换分区卡死之前结束游戏；修复了 MV / MZ 引擎中的若干内存泄漏；BGM / BGS 改为流式播放（不再整首解码进内存）；短音效只解码一次；场景切换时主动回收内存。
 - **PC 转换工具**：带图形界面，可选择把视频重新编码为 480p / 720p（`tools/`）。
 - **设置界面与游戏菜单**：原生 SDL2 程序，与选择界面风格一致。
 
@@ -99,7 +99,7 @@ PocketMZ is an unofficial project, not affiliated with KADOKAWA or Gotcha Gotcha
 - Hold-F2 hotkeys: menu (F1), quit (Start), title (Select), save and load screens (L3, R3), slow motion (L1), hold fast-forward (R1), pause (A), screenshot (X), FPS display (Y), volume (Up/Down).
 - In-game PocketMZ menu: frame rate (30/60), speed, FPS display, volume, render scale, close ES while playing (per game), key mapping, one-time image precompile, save backups.
 - Performance: rendering at screen resolution, 30 fps default, large images downscaled at load with a persistent cache, window contents drawn at the display scale, off-screen sprites skipped, pre-blurred menu backgrounds.
-- Memory protection: cgroup limits, and a watchdog that ends the game before the handheld stalls in swap. Leak fixes for the MV and MZ engines.
+- Memory protection: cgroup limits, and a watchdog that ends the game before the handheld stalls in swap. Leak fixes for the MV and MZ engines; BGM / BGS streamed instead of decoded in full; short sound effects decoded once; a full GC at scene changes.
 - PC converter tool with a GUI (in `tools/`), with optional video re-encode to 480p or 720p.
 - Settings screen and game menu, native SDL2.
 

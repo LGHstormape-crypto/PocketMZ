@@ -182,8 +182,13 @@ run_one() {   # run_one <launcher> <minutes> <mode>
       echo "$(( el * 1000 ))|peakshot|ram+swap=${tot}MB step=${st_step}" >> "$OUT/events.log"
     fi
     # memory guard: end the game before the handheld stalls in swap (sshd and the REPL stop
-    # answering long before the kernel or the PocketMZ watchdog acts). AT_MIN_AVAIL / AT_MAX_SWAP.
-    if [ "${av:-999}" -lt "${AT_MIN_AVAIL:-140}" ] || [ "${sw:-0}" -gt "${AT_MAX_SWAP:-400}" ]; then
+    # answering long before the kernel or the PocketMZ watchdog acts). Same shape as the watchdog:
+    # low MemAvailable only counts while swap is short too (system SwapFree < AT_SWAPFREE MB or game
+    # swap > AT_MAX_SWAP - 40); hard limits: MemAvailable < AT_HARD_AVAIL or game swap > AT_MAX_SWAP.
+    # (A heavy MZ game sat at avail 120-140 MB with PSI < 10% and swap half free: not a stall.)
+    local swf; swf=$(awk '/^SwapFree/{print int($2/1024)}' /proc/meminfo)
+    if { [ "${av:-999}" -lt "${AT_MIN_AVAIL:-140}" ] && { [ "${swf:-999}" -lt "${AT_SWAPFREE:-150}" ] || [ "${sw:-0}" -gt $(( ${AT_MAX_SWAP:-400} - 40 )) ]; }; } ||
+       [ "${av:-999}" -lt "${AT_HARD_AVAIL:-90}" ] || [ "${sw:-0}" -gt "${AT_MAX_SWAP:-400}" ]; then
       RESULT="LOWMEM(avail=${av}MB swap=${sw}MB)"; echo "memory guard: avail=${av}MB swap=${sw}MB at step $st_step - ending the game"
       echo "$(mmss $el) LOWMEM avail=${av}MB swap=${sw}MB step=$st_step scene=$st_sc map=$st_map" >> "$OUT/hangs.txt"
       echo "$(( el * 1000 ))|LOWMEM|avail=${av}MB swap=${sw}MB step=$st_step" >> "$OUT/events.log"

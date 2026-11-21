@@ -344,7 +344,7 @@
                 try {
                     if (!C.read || window.PMZ_IMG_OFF || C.bad.has(url)) return null;
                     const s = imgScale();
-                    if (s > 0.75) return null;
+                    if (s > 0.9) return null;
                     const rel = relOf(url);
                     const src = rel && srcStat(rel);
                     if (!src) return null;
@@ -443,7 +443,7 @@
             const finish = err => { if (err) res.error = err; resolve(res); };
             try {
                 if (!IMG_CACHE.read || window.PMZ_IMG_OFF) return finish(PMZ_IMG.cacheOff || "image scaling is off");
-                if (imgScale() > 0.75) return finish("display scale too large to need a cache");
+                if (imgScale() > 0.9) return finish("display scale too large to need a cache");
                 if (!IMG_CACHE.prepare()) return finish(PMZ_IMG.cacheOff || "cache is not writable");
                 for (let d of (dirs && dirs.length ? dirs : ENG.defaultDirs)) {
                     d = String(d).replace(/^img\//, "").replace(/\/+$/, "");
@@ -575,7 +575,7 @@
             }
             const w = img && img.width, h = img && img.height, s = imgScale();
             if ((st !== "requestCompleted" && st !== "decryptCompleted") || this.__canvas || !img || img.tagName !== "IMG" ||
-                s > 0.75 || w * h < IMG_MIN_PIXELS || !IMG_DIRS.test(this._url || "") || window.PMZ_IMG_OFF) {
+                s > 0.9 || w * h < IMG_MIN_PIXELS || !IMG_DIRS.test(this._url || "") || window.PMZ_IMG_OFF) {
                 return _decode.apply(this, arguments);
             }
             let c;
@@ -734,6 +734,83 @@
         if (gc) { gc.maxIdle = 900; gc.checkCountMax = 300; }
     }
 
+    // 10. Full GC after scene changes and when memory runs low. Dropped canvases, images and decoded
+    //     audio (WebAudio buffers: 20-50 MB per BGM at 24 kHz) live outside the small JS heap, so V8
+    //     rarely collects their owners on its own: in an MZ game decoded audio grew to 153 MB and
+    //     images to 95 MB within 10 minutes of maps and battles, most of it garbage. With
+    //     --expose-gc (pocketmz-run.sh) a full GC runs ~0.5 s after each scene change (at most every
+    //     8 s; scene changes are loading pauses anyway) and when MemAvailable drops below 300 MB
+    //     (checked every 15 s, at most every 20 s). POCKETMZ_GC=off disables it.
+    if (typeof window.gc === "function" && window.SceneManager && SceneManager.changeScene &&
+        String((window.process && process.env && process.env.POCKETMZ_GC) || "on") !== "off") {
+        let lastGc = 0;
+        const gcNow = minGap => {
+            const t = performance.now();
+            if (t - lastGc < minGap) return;
+            lastGc = t;
+            try { window.gc(); } catch (e) { /* gc not available after all */ }
+            window.PMZ_GC_COUNT = (window.PMZ_GC_COUNT || 0) + 1;
+        };
+        const _changeSceneGc = SceneManager.changeScene;
+        SceneManager.changeScene = function() {
+            const old = this._scene;
+            const r = _changeSceneGc.apply(this, arguments);
+            if (this._scene && this._scene !== old) setTimeout(() => gcNow(8000), 500);
+            return r;
+        };
+        const fsGc = window.require ? (() => { try { return require("fs"); } catch (e) { return null; } })() : null;
+        if (fsGc) setInterval(() => {
+            try {
+                const m = /MemAvailable:\s+(\d+)/.exec(fsGc.readFileSync("/proc/meminfo", "utf8"));
+                if (m && +m[1] < 300 * 1024) gcNow(20000);
+            } catch (e) { /* no /proc */ }
+        }, 15000);
+    }
+
+    // 11. Decoded sound effects reused (as PocketMZ_Handheld.js section 19). MV loads and decodes an
+    //     SE file again for every playSe; footstep plugins play one per step. Short SE files
+    //     (audio/se/, <= 10 s) are decoded once and their AudioBuffer is shared by later plays
+    //     (24 MB, least recently used out). POCKETMZ_SE_CACHE=off disables it.
+    if (window.WebAudio && WebAudio.prototype._load && WebAudio.prototype._onLoad &&
+        String((window.process && process.env && process.env.POCKETMZ_SE_CACHE) || "on") !== "off") {
+        const W = WebAudio.prototype;
+        const SE = new Map(), SE_MAX = 24 << 20;
+        const PMZ_SE = window.PMZ_SE = { hits: 0, stored: 0, bytes: 0, size: () => SE.size };
+        const isSe = url => /(^|\/)audio\/se\//.test(String(url || ""));
+        const bytesOf = b => b.length * b.numberOfChannels * 4;
+        const _load = W._load;
+        W._load = function(url) {
+            const hit = isSe(this._url) && SE.get(this._url);
+            if (!hit || !WebAudio._context) return _load.apply(this, arguments);
+            SE.delete(this._url); SE.set(this._url, hit);
+            PMZ_SE.hits++;
+            // MV's own decode callback sets these (loop points already in seconds) and calls _onLoad
+            Promise.resolve().then(() => {
+                if (this._url !== hit.url || this._buffer) return;
+                this._buffer = hit.buffer;
+                this._totalTime = hit.totalTime;
+                this._sampleRate = hit.sampleRate;
+                this._loopStart = hit.loopStart;
+                this._loopLength = hit.loopLength;
+                this._onLoad();
+            });
+        };
+        const _onLoad = W._onLoad;
+        W._onLoad = function() {
+            const b = this._buffer;
+            if (b && isSe(this._url) && b.duration <= 10 && !SE.has(this._url)) {
+                SE.set(this._url, { url: this._url, buffer: b, totalTime: this._totalTime, sampleRate: this._sampleRate,
+                                    loopStart: this._loopStart, loopLength: this._loopLength });
+                PMZ_SE.bytes += bytesOf(b); PMZ_SE.stored++;
+                for (const [k, v] of SE) {
+                    if (PMZ_SE.bytes <= SE_MAX) break;
+                    SE.delete(k); PMZ_SE.bytes -= bytesOf(v.buffer);
+                }
+            }
+            return _onLoad.apply(this, arguments);
+        };
+    }
+
     // 9. Window bitmaps drawn at the display scale (as PocketMZ_Handheld.js section 17, MV 1.6's
     //    lazy Bitmap: __canvas / __context / __baseTexture). A 1600x1000 game makes window-size
     //    canvases for the contents, the back and the frame of every window and draws text into
@@ -753,7 +830,7 @@
         let depth = 0;
         const winScale = () => {
             const R = Graphics._renderer, r = R && R.resolution;
-            return r && r <= 0.75 && !window.PMZ_WIN_OFF ? r : 0;
+            return r && r <= 0.9 && !window.PMZ_WIN_OFF ? r : 0;
         };
         const scaled = b => b._pmzCS && b.__canvas && !b._pmzRaw;
         const pinTexture = (b, bt) => {   // game-size texture whatever PIXI recomputes

@@ -570,11 +570,24 @@
       if (w && !P.chSel) { w.select(P.chIdx); P.chSel = now; return; }
       if (P.chSel && now - P.chSel > 300 && now - P.lastPress >= 400) { press('ok'); P.lastPress = now; }
       if ((P.chSel && now - P.chSel > 3000) || (!w && now - P.chSeen > 5000)) { // window ignores us: answer directly
-        gm.onChoice(P.chIdx); gm.clear(); P.chSeen = 0; P.chSel = 0;
+        // through the window when there is one (records the answer, ends the message, closes the window);
+        // clearing $gameMessage alone left the choice window open and active with nothing to choose, and
+        // the message window waited for it forever (seen in an MZ game with several message plugins)
+        var done = false;
+        if (w && w.callOkHandler) { try { w.select(P.chIdx); w.callOkHandler(); done = true; } catch (e) { logError('choice ' + e); } }
+        if (!done) { gm.onChoice(P.chIdx); gm.clear(); if (w) { try { w.deactivate(); w.close(); } catch (e) { /* ignore */ } } }
+        ev('stuck', 'choice answered directly (' + P.chIdx + ')');
+        P.chSeen = 0; P.chSel = 0;
       }
       return;
     }
     P.chSeen = 0; P.chSel = 0;
+    // a choice window still open and active without a choice: nothing can close it, the message waits on it
+    var stale = findActive(sc, 'Window_ChoiceList');
+    if (stale && !gm.isChoice() && now - P.msgSince > 2000) {
+      try { stale.deactivate(); stale.close(); ev('stuck', 'stale choice window closed'); } catch (e) { /* ignore */ }
+      return;
+    }
     if (now - P.lastPress < 400) return;
     P.lastPress = now;
     if (gm.isItemChoice() && now - P.msgSince > 3000) press((((now - P.msgSince) / 1000) | 0) % 2 ? 'cancel' : 'ok');
