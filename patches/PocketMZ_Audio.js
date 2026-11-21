@@ -35,7 +35,8 @@
     const STATS = window.PMZ_STREAM = {
         created: 0, played: 0, destroyed: 0, errors: 0,
         decoded: 0, element: 0,     // backend chosen per buffer (a fallback counts in both)
-        underruns: 0, loops: 0, live: new Set(),
+        underruns: 0, loops: 0, collected: 0, live: new Set(),
+        open: () => workerStreams.size,     // streams the worker holds
     };
     // blob URLs of streams the game dropped without destroy() (MV only stops them)
     const blobs = window.FinalizationRegistry ? new FinalizationRegistry(url => URL.revokeObjectURL(url)) : null;
@@ -452,10 +453,19 @@
     // ======== main thread ========
     // one Worker for all streams, created on first use and never terminated
     let worker = null, workerDead = !DECODE, nextStreamId = 1;
-    const workerStreams = new Map();    // id -> StreamAudio waiting for or using the worker
+    // id -> WeakRef(StreamAudio) waiting for or using the worker. Weak: MV only stops a BGM it drops
+    // (never destroy()), so the worker's copy of the file is closed when the buffer is collected.
+    const workerStreams = new Map();
+    const weak = o => (window.WeakRef ? new WeakRef(o) : { deref: () => o });
+    const closer = window.FinalizationRegistry ? new FinalizationRegistry(id => {
+        if (!workerStreams.has(id)) return;
+        workerStreams.delete(id);
+        STATS.collected++;
+        toWorker({ type: "close", id });
+    }) : null;
     const workerFailed = () => {
         workerDead = true;
-        const list = Array.from(workerStreams.values());
+        const list = Array.from(workerStreams.values(), r => r.deref()).filter(Boolean);
         workerStreams.clear();
         for (const s of list) s._workerLost();
     };
@@ -469,7 +479,7 @@
                 const m = e.data;
                 if (!m) return;
                 if (m.type === "hello") { if (!m.ok) workerFailed(); return; }
-                const s = workerStreams.get(m.id);
+                const r = workerStreams.get(m.id), s = r && r.deref();
                 if (s) s._onWorker(m);
             };
             worker.onerror = e => { if (e && e.preventDefault) e.preventDefault(); STATS.errors++; workerFailed(); };
@@ -543,7 +553,8 @@
             // the worker gets its own copy (it needs the file for loops); this one is for an element fallback
             this._data = data;
             this._id = nextStreamId++;
-            workerStreams.set(this._id, this);
+            workerStreams.set(this._id, weak(this));
+            if (closer) closer.register(this, this._id, this);
             const copy = ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data.slice(0);
             toWorker({ type: "open", id: this._id, bytes: copy, outRate: c.sampleRate,
                 loopStart: lp ? lp.start : 0, loopEnd: lp ? lp.end : 0, loopRate: lp ? lp.rate : 0 }, [copy]);
@@ -682,6 +693,7 @@
             if (!this._id) return;
             toWorker({ type: "close", id: this._id });
             workerStreams.delete(this._id);
+            if (closer) closer.unregister(this);
             this._id = 0;
         }
         _decStart(loop, offset) {
