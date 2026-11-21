@@ -20,22 +20,42 @@
   var MZ = typeof Utils !== 'undefined' && Utils.RPGMAKER_NAME === 'MZ';
   var G = window;
 
+  // ---------------------------------------------------------------- deterministic mode (opts.seed)
+  // With a numeric seed the run is reproducible: driver randomness comes from seeded stream A (rand()), the
+  // page's own Math.random is replaced by seeded stream B (so encounters / damage / event branches repeat),
+  // and every decision is timed in logic frames (DNOW) instead of wall-clock time.
+  var ORIG_RANDOM = Math.random, randA = null;
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function rand() { return randA ? randA() : Math.random(); }
+  function restoreRandom() { if (randA) { Math.random = ORIG_RANDOM; randA = null; } }
+
   // ---------------------------------------------------------------- state
   var S = {
     phase: 'idle', step: '', mode: 'play', opts: {}, running: false,
     t0: 0, lastProgress: NOW(), lastDecide: 0,
+    seeded: false, lockNow: false, lockT0: 0, lockGaveUp: false, lfr: 0, lastDecideF: 0, rt0: 0, th: 2166136261, tn: 0, // seeded mode: logic-frame counter, real start time, trace hash / points
     fr: 0, fps: 0, gap: 0, gapMax: 0, lastRender: 0, sFr: 0, sT: NOW(), lastStall: 0,
     heap: 0, img: '0/0', peakHeap: 0, peakImgMpx: 0,
     pics: 0, picT: NOW(), reqT: 0, transferT: 0, transferMap: 0,
-    n: { maps: 0, mapLoads: 0, battles: 0, scenes: 0, newgames: 0, gameovers: 0, events: 0, msgs: 0, errors: 0, stuck: 0, teleports: 0, menus: 0, movies: 0, slowimg: 0 },
+    n: { maps: 0, mapLoads: 0, battles: 0, scenes: 0, newgames: 0, gameovers: 0, events: 0, msgs: 0, errors: 0, stuck: 0, teleports: 0, menus: 0, movies: 0, slowimg: 0, nondet: 0, lockFrames: 0, lockMs: 0 },
     maps: {}, mapLoads: [], sceneMs: [], errs: {}, q: [], dropped: 0, crashed: false
   };
   var P = { // autoplayer state
-    sceneObj: null, sceneSince: 0, lastStarted: '', lastPress: 0, target: null, visited: {}, fail: {},
+    sceneObj: null, sceneSince: 0, battleReal: 0, lastStarted: '', lastPress: 0, target: null, visited: {}, fail: {},
     mapId: 0, mapSince: 0, lastMenu: 0, menu: null, randomUntil: 0, lastTeleport: 0, wasEv: false, evSince: 0,
     msgSince: 0, chSeen: 0, chSel: 0, chIdx: 0, battleSince: 0, battleTroop: 0, troopRun: false, fixSpawn: false,
     unkPress: 0, gameoverSeen: null, nameSeen: null, tour: null
   };
+  // decision clock: wall-clock normally, logic frames (60 per second) in seeded mode. NOW() stays the
+  // measurement clock (stalls, fps, load times, event timestamps); everything compared against decide's `now` uses DNOW().
+  function DNOW() { return S.seeded ? S.lfr * 1000 / 60 : NOW(); }
   var inj = {}; // input name -> frames to stay down (1 = one frame down, then one frame up)
 
   // ---------------------------------------------------------------- helpers
@@ -47,11 +67,11 @@
       S.q.push(el() + '|' + kind + '|' + san(text));
     } catch (e) { /* never throw */ }
   }
-  function progress() { S.lastProgress = NOW(); }
+  function progress() { S.lastProgress = DNOW(); }
   function sceneName(sc) { return sc ? (sc.constructor && sc.constructor.name) || 'anon' : ''; }
   function curMapId() { try { return G.$gameMap ? ($gameMap.mapId() || 0) : 0; } catch (e) { return 0; } }
   function mapName(id) { try { var m = G.$dataMapInfos && $dataMapInfos[id]; return m ? m.name : ''; } catch (e) { return ''; } }
-  function rnd(n) { return Math.floor(Math.random() * n); }
+  function rnd(n) { return Math.floor(rand() * n); }
   function logError(msg) {
     try {
       msg = san(msg);
@@ -282,14 +302,31 @@
   // ---------------------------------------------------------------- hooks on the engine
   function installHooks() {
     // input injection + per-frame driver
-    hook(G.Input, 'update', function () {
+    var oInput = G.Input && Input.update;
+    if (typeof oInput === 'function') Input.update = function () {
+      // seeded: a frame with assets still loading is a no-op (no input update, no countdowns, no driver), see lockCheck()
+      if (S.running && S.seeded) { S.lockNow = lockCheck(); if (S.lockNow) return; } else S.lockNow = false;
       if (S.running) {
-        for (var n in inj) {
-          if (inj[n] > 0) { Input._currentState[n] = true; inj[n]--; } else { Input._currentState[n] = false; delete inj[n]; }
-        }
-        frameDrive();
+        try {
+          for (var n in inj) {
+            if (inj[n] > 0) { Input._currentState[n] = true; inj[n]--; } else { Input._currentState[n] = false; delete inj[n]; }
+          }
+          frameDrive();
+        } catch (e) { /* ignore */ }
       }
-    });
+      return oInput.apply(this, arguments);
+    };
+    // seeded: lock-step loading. S.lfr counts only frames where the scene logic really ran.
+    var oScene = G.SceneManager && SceneManager.updateScene;
+    if (typeof oScene === 'function') SceneManager.updateScene = function () {
+      if (S.running && S.seeded && started()) {
+        if (S.lockNow) { S.n.lockFrames++; return undefined; } // assets not ready: game logic pauses
+        var r = oScene.apply(this, arguments);
+        S.lfr++; if (S.lfr % 600 === 0) traceTick();
+        return r;
+      }
+      return oScene.apply(this, arguments);
+    };
     // frames drawn / worst gap
     try {
       var R = (G.Graphics && Graphics.app && Graphics.app.renderer) || (G.Graphics && Graphics._renderer);
@@ -328,11 +365,11 @@
     // battles
     hook(G.BattleManager, 'setup', function (troopId) { P.battleTroop = troopId; });
     hook(G.BattleManager, 'startBattle', function () {
-      S.n.battles++; P.battleSince = NOW(); progress();
+      S.n.battles++; P.battleSince = DNOW(); P.battleReal = NOW(); progress();
       ev('battle', 'start troop=' + P.battleTroop + ' map=' + curMapId());
     });
     hook(G.BattleManager, 'endBattle', function (result) {
-      ev('battle', 'end troop=' + P.battleTroop + ' result=' + result + ' ms=' + Math.round(NOW() - P.battleSince));
+      ev('battle', 'end troop=' + P.battleTroop + ' result=' + result + ' ms=' + Math.round(NOW() - P.battleReal));
       progress();
     });
     // pictures and movies
@@ -362,7 +399,7 @@
     // fatal engine errors (the game stops after these)
     hook(G.SceneManager, 'catchException', function (e) {
       logError('FATAL ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 2).join(' ') : (e && e[0] === 'LoadError' ? 'LoadError ' + e[1] : e)));
-      S.crashed = true; S.running = false; S.phase = 'crashed'; releaseInputs(); ev('phase', 'crashed step=' + S.step);
+      S.crashed = true; S.running = false; S.phase = 'crashed'; releaseInputs(); restoreRandom(); ev('phase', 'crashed step=' + S.step);
     });
     hook(G.Graphics, 'printError', function (name, message) { ev('error', 'printError ' + name + ' ' + message); });
     // window level errors, resource errors (capture), rejected promises
@@ -385,11 +422,11 @@
   }
 
   function abortUser(why) {
-    S.running = false; S.phase = 'aborted-user'; releaseInputs();
+    S.running = false; S.phase = 'aborted-user'; releaseInputs(); restoreRandom();
     ev('user', 'trusted ' + why + ' event, driver stopped step=' + S.step);
   }
   function finish(phase) {
-    S.running = false; S.phase = phase; releaseInputs();
+    S.running = false; S.phase = phase; releaseInputs(); restoreRandom();
     ev('phase', phase + ' step=' + S.step);
   }
 
@@ -472,7 +509,7 @@
       $gameMessage.clear();
       var it = $gameMap._interpreter;
       if (it && it.terminate) it.terminate();
-      P.fixSpawn = true; P.target = null; P.lastTeleport = NOW();
+      P.fixSpawn = true; P.target = null; P.lastTeleport = DNOW();
       $gamePlayer.reserveTransfer(mapId, 1, 1, 2, 2);
       S.n.teleports++; progress();
       ev('teleport', 'map=' + mapId + ' name=' + mapName(mapId) + ' reason=' + reason);
@@ -486,16 +523,42 @@
     ev('newgame', why);
   }
 
+  // ---------------------------------------------------------------- lock-step loading (seeded mode)
+  function assetsReady() {
+    var ok = true;
+    try { if (G.ImageManager && ImageManager.isReady && !ImageManager.isReady()) ok = false; } catch (e) { /* load error: treat as ready */ }
+    try { if (ok && G.EffectManager && EffectManager.isReady && !EffectManager.isReady()) ok = false; } catch (e) { /* ignore */ }
+    return ok;
+  }
+  function lockCheck() { // true = pause this frame; gives up after 5 s of real time until the assets are ready again
+    var now = NOW(), ms;
+    if (!started() || assetsReady()) {
+      if (S.lockT0 && !S.lockGaveUp) S.n.lockMs += now - S.lockT0;
+      S.lockT0 = 0; S.lockGaveUp = false;
+      return false;
+    }
+    if (!S.lockT0) S.lockT0 = now;
+    if (S.lockGaveUp) return false;
+    ms = now - S.lockT0;
+    if (ms > 5000) {
+      S.lockGaveUp = true; S.n.lockMs += ms; S.n.nondet++;
+      ev('nondet', 'paused=' + Math.round(ms) + ' step=' + S.step);
+      return false;
+    }
+    return true;
+  }
+
   // ---------------------------------------------------------------- autoplayer
   function frameDrive() {
-    var now = NOW();
+    var now = DNOW();
     if (S.opts.watchPad) {
       try {
         var gps = navigator.getGamepads ? navigator.getGamepads() : [];
         for (var i = 0; i < gps.length; i++) if (gps[i] && gps[i].buttons.some(function (b) { return b.pressed; })) { abortUser('gamepad'); return; }
       } catch (e) { /* ignore */ }
     }
-    if (now - S.lastDecide < 100) return;
+    if (S.seeded) { if (S.lfr - S.lastDecideF < 6) return; S.lastDecideF = S.lfr; } // every 6 logic frames
+    else if (now - S.lastDecide < 100) return;
     S.lastDecide = now;
     try { decide(now); } catch (e) { logError('driver ' + (e && e.stack ? String(e.stack).split('\n').slice(0, 2).join(' ') : e)); }
   }
@@ -509,7 +572,7 @@
     if (!started()) { S.step = 'loading ' + nm; return; }
     if (S.phase === 'init') {
       if (nm === 'Scene_Boot' || !G.DataManager) return;
-      S.phase = S.mode; S.t0 = now; P.lastMenu = now; progress();
+      S.phase = S.mode; S.t0 = now; S.rt0 = NOW(); P.lastMenu = now; progress();
       ev('phase', S.mode + ' start scene=' + nm);
       if (S.mode === 'tour') startTour();
       if (!isMap(sc)) { newGame('start from ' + nm); return; } // already on a map: just carry on from there
@@ -611,7 +674,7 @@
   }
 
   var MENU_SCENES = ['Scene_Menu', 'Scene_Item', 'Scene_Skill', 'Scene_Equip', 'Scene_Status'];
-  function startMenu() { P.menu = { i: 0, state: 'push', t: 0, cancelAt: 0, name: '' }; P.lastMenu = NOW(); S.n.menus++; }
+  function startMenu() { P.menu = { i: 0, state: 'push', t: 0, cancelAt: 0, name: '' }; P.lastMenu = DNOW(); S.n.menus++; }
   function menuStep(now, sc) { // returns true while it owns this tick
     var m = P.menu;
     while (m.i < MENU_SCENES.length && !G[MENU_SCENES[m.i]]) m.i++;
@@ -635,7 +698,7 @@
   function failTarget(t) { if (t.key) P.fail[t.key] = (P.fail[t.key] || 0) + 1; }
   function pickTarget(now) {
     var mapId = curMapId(), randomOnly = now < P.randomUntil;
-    if (!randomOnly && Math.random() < 0.75) {
+    if (!randomOnly && rand() < 0.75) {
       var c = [], evs = $gameMap.events();
       for (var i = 0; i < evs.length; i++) {
         try {
@@ -651,7 +714,7 @@
         } catch (x) { /* skip event */ }
       }
       c.sort(function (a, b) { return b.s - a.s; });
-      if (c.length && (c[0].s > 0 || Math.random() < 0.1)) {
+      if (c.length && (c[0].s > 0 || rand() < 0.1)) {
         var top = c.filter(function (q) { return q.s >= c[0].s - 1; }).slice(0, 3), q = top[rnd(top.length)];
         return { x: q.e.x, y: q.e.y, ev: q.e, key: q.key, since: now, pressN: 0, lastPress: 0 };
       }
@@ -734,10 +797,10 @@
   // ---- tour mode
   function startTour() {
     var o = S.opts, maps = mapIds(), troops = [], lim = o.limit || 0;
-    if (o.shuffle) maps.sort(function () { return Math.random() - 0.5; });
+    if (o.shuffle) maps.sort(function () { return rand() - 0.5; });
     if (lim) maps = maps.slice(0, lim);
     try { for (var i = 1; i < $dataTroops.length; i++) if ($dataTroops[i] && $dataTroops[i].members && $dataTroops[i].members.length) troops.push(i); } catch (e) { /* ignore */ }
-    if (o.shuffle) troops.sort(function () { return Math.random() - 0.5; });
+    if (o.shuffle) troops.sort(function () { return rand() - 0.5; });
     var tl = o.troopLimit !== undefined ? o.troopLimit : lim;
     if (tl) troops = troops.slice(0, tl);
     P.tour = { maps: maps, troops: troops, mi: 0, ti: 0, stage: 'maps', state: 'tp', t: 0, menuStarted: false };
@@ -780,12 +843,32 @@
     return false;
   }
 
+  // ---------------------------------------------------------------- trace (seeded mode): reproducibility check
+  function tv(fn) { try { var v = fn(); return v === undefined || v === null ? '?' : v; } catch (e) { return '?'; } }
+  function traceTick() {
+    try {
+      var sc = tv(function () { return sceneName(SceneManager._scene); });
+      var t = 'lfr=' + S.lfr + ' sc=' + sc + ' map=' + curMapId() +
+        ' x=' + tv(function () { return $gamePlayer.x; }) + ' y=' + tv(function () { return $gamePlayer.y; }) +
+        ' gold=' + tv(function () { return $gameParty.gold(); }) + ' steps=' + tv(function () { return $gameParty.steps(); }) +
+        ' battles=' + S.n.battles;
+      var h = S.th, s = t + '\n';
+      for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } // FNV-1a 32 bit
+      S.th = h >>> 0; S.tn++;
+      ev('trace', t);
+    } catch (e) { /* never throw */ }
+  }
+  function traceStr() {
+    return 'hash=' + ('00000000' + (S.th >>> 0).toString(16)).slice(-8) + ' points=' + S.tn +
+      (S.seeded ? ' nondet=' + S.n.nondet + ' lockframes=' + S.n.lockFrames + ' lockms=' + Math.round(S.n.lockMs) : '');
+  }
+
   // ---------------------------------------------------------------- public API
   function statusStr() {
-    var sc = G.SceneManager && SceneManager._scene, now = NOW();
+    var sc = G.SceneManager && SceneManager._scene, now = NOW(), dn = DNOW();
     var pairs = [
       ['ph', S.phase], ['step', S.step], ['sc', sceneName(sc)], ['map', curMapId()], ['fr', S.fr], ['fps', S.fps],
-      ['gap', S.gap], ['heap', S.heap], ['img', S.img], ['last', Math.round(now - S.lastProgress)], ['t', S.running ? Math.round(now - S.t0) : 0],
+      ['gap', S.gap], ['heap', S.heap], ['img', S.img], ['last', Math.round(dn - S.lastProgress)], ['t', S.running ? Math.round(now - S.rt0) : 0],
       ['maps', S.n.maps], ['battles', S.n.battles], ['scenes', S.n.scenes], ['errs', S.n.errors], ['tp', S.n.teleports], ['stuck', S.n.stuck]
     ];
     return pairs.map(function (p) { return p[0] + '=' + san(p[1]); }).join(';');
@@ -800,13 +883,22 @@
       try {
         if (S.running) return 'already running';
         S.opts = opts || {}; S.mode = S.opts.mode === 'tour' ? 'tour' : 'play';
-        S.phase = 'init'; S.step = 'wait title'; S.running = true; S.crashed = false; S.t0 = NOW(); progress();
-        ev('phase', 'init mode=' + S.mode + ' engine=' + (G.Utils ? Utils.RPGMAKER_NAME + ' ' + Utils.RPGMAKER_VERSION : '?'));
+        restoreRandom();
+        S.seeded = typeof S.opts.seed === 'number' && isFinite(S.opts.seed);
+        if (S.seeded) {
+          // before the new game is set up (start() is called at the title): the game's own randomness is seeded too
+          randA = mulberry32(S.opts.seed);
+          Math.random = mulberry32(S.opts.seed ^ 0x9e3779b9);
+          S.lfr = 0; S.lockNow = false; S.lockT0 = 0; S.lockGaveUp = false; S.n.nondet = 0; S.n.lockFrames = 0; S.n.lockMs = 0; S.lastDecideF = 0; S.lastDecide = 0; S.th = 2166136261; S.tn = 0;
+        }
+        S.phase = 'init'; S.step = 'wait title'; S.running = true; S.crashed = false; S.t0 = DNOW(); S.rt0 = NOW(); progress();
+        ev('phase', 'init mode=' + S.mode + (S.seeded ? ' seed=' + S.opts.seed : '') + ' engine=' + (G.Utils ? Utils.RPGMAKER_NAME + ' ' + Utils.RPGMAKER_VERSION : '?'));
         return 'started ' + S.mode;
       } catch (e) { return 'error ' + san(e); }
     },
     stop: function () { try { if (S.running) finish('stopped'); return 'stopped'; } catch (e) { return 'error'; } },
     status: statusStr,
+    trace: traceStr,
     drain: drainStr,
     poll: function () { return statusStr() + '@@' + drainStr(); },
     errors: function () { // "count message" per distinct error, most frequent first, joined by ^
@@ -821,7 +913,7 @@
         var errs = Object.keys(S.errs).map(function (k) { return { msg: k, n: S.errs[k] }; });
         return JSON.stringify({
           phase: S.phase, mode: S.mode, engine: G.Utils ? Utils.RPGMAKER_NAME + ' ' + Utils.RPGMAKER_VERSION : '',
-          game: G.$dataSystem ? $dataSystem.gameTitle : '', seconds: Math.round((NOW() - S.t0) / 1000),
+          game: G.$dataSystem ? $dataSystem.gameTitle : '', seconds: Math.round((NOW() - S.rt0) / 1000), seed: S.seeded ? S.opts.seed : null, trace: { hash: traceStr().split(' ')[0].slice(5), points: S.tn, nondet: S.n.nondet, lockFrames: S.n.lockFrames, lockMs: Math.round(S.n.lockMs) },
           counters: S.n, mapsVisited: Object.keys(S.maps), peakHeapMB: S.peakHeap, peakImgMpx: Math.round(S.peakImgMpx * 10) / 10,
           slowMaps: top(S.mapLoads, 'ms', 10), slowScenes: top(S.sceneMs, 'ms', 10), errors: errs, droppedEvents: S.dropped
         });

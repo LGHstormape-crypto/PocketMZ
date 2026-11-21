@@ -8,6 +8,10 @@
 # Result: /storage/pocketmz/games/<id>/autotest-<YYYYmmdd-HHMMSS>/{timeline.csv,events.log,summary.txt,*.png}
 # Saves: the game's save folder is backed up first and restored (and diffed) at exit; a loud warning if it differs.
 # modes: play = new game + autoplayer for <minutes>; tour = every map, every troop, menu scenes (ends when done).
+# AT_SEED=<number>  deterministic run (same seed = same route): seeded driver + game Math.random, decisions timed in logic
+#                   frames, <minutes> counts logic minutes (the wall-clock safety limit is 2x + 2 min). summary.txt gets a
+#                   "trace: hash=... points=..." line; two runs of the same game and seed should print the same hash.
+#                   Unset = the old wall-clock behaviour.
 RZ=/storage/pocketmz
 TS=$RZ/pocketmz-test.sh
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -15,7 +19,7 @@ JSF=$RZ/pocketmz-autotest.js; [ -f "$JSF" ] || JSF=$HERE/pocketmz-autotest.js
 CG=/sys/fs/cgroup/unified/pocketmz
 export XDG_RUNTIME_DIR=/var/run/0-runtime-dir WAYLAND_DISPLAY=wayland-1 SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
 
-ACTIVE=0; ABORT=0; STARTED=0; RESULTS=$(mktemp /tmp/autotest-results.XXXXXX)
+TRACE="n/a"; ACTIVE=0; ABORT=0; STARTED=0; RESULTS=$(mktemp /tmp/autotest-results.XXXXXX)
 
 up() { cut -d' ' -f1 /proc/uptime; }
 mb() { [ -f "$1" ] && echo $(( $(cat "$1") >> 20 )) || echo 0; }
@@ -48,6 +52,7 @@ finish_game() {   # idempotent: stop game, restore saves, write the summary
   if pidof nw >/dev/null; then
     unq "$(rjs 'PMZ_AT.errors()' 6)" | tr '^' '\n' > "$OUT/errors.txt"
     rjs 'PMZ_AT.report()' 6 > "$OUT/report.json"
+    TRACE=$(unq "$(rjs 'PMZ_AT.trace()' 6)"); case "$TRACE" in hash=*points=*) ;; *) TRACE="n/a" ;; esac
     rjs 'PMZ_AT.stop()' 4 >/dev/null
   fi
   $TS stop > "$OUT/stop.log" 2>&1
@@ -75,8 +80,9 @@ make_summary() {
   low=$(awk -F, 'NR>1 && $9!=""{if(mn==""||$9+0<mn){mn=$9+0;r=$2"|"$4"|"$6}} END{printf "%d|%s", mn, r}' "$csv")
   PEAK=${peak%%|*}; LOW=${low%%|*}
   {
-    echo "== autotest $ID  mode=$MODE  engine=${ENGINE:-?}  title=${GTITLE:-?}"
+    echo "== autotest $ID  mode=$MODE  engine=${ENGINE:-?}  title=${GTITLE:-?}${AT_SEED:+  seed=$AT_SEED}"
     echo "run: ${mins} min (${ELAPSED}s), result: $RESULT  $SAVES_MSG"
+    [ -n "$AT_SEED" ] && echo "trace: $TRACE"
     echo "maps visited: $st_maps   battles: $st_battles   scene changes: $st_scenes   teleports: $st_tp   stuck: $st_stuck"
     echo "$peak" | awk -F'|' '{printf "peak ram+swap: %d MB (ram %d + swap %d) at %s step=%s map=%s\n", $1,$2,$3,sprintf("%02d:%02d",$4/60,$4%60),$5,$6}'
     echo "$low" | awk -F'|' '{printf "lowest MemAvailable: %d MB at %s step=%s map=%s\n", $1,sprintf("%02d:%02d",$2/60,$2%60),$3,$4}'
@@ -107,7 +113,7 @@ run_one() {   # run_one <launcher> <minutes> <mode>
   [ -f "$PORT" ] || { echo "no such launcher: $PORT" >&2; return 1; }
   ID=$(sed -n 's/^# pocketmz: //p; s/^id=//p' "$PORT" | head -1)
   [ -n "$ID" ] || ID=$($RZ/pocketmz-scan.sh --id "$(sed -n 's/^exec .*pocketmz-run.sh "\([^"]*\)".*/\1/p' "$PORT")")
-  echo "== $ID  ($PORT)  ${MINUTES} min  $MODE"
+  echo "== $ID  ($PORT)  ${MINUTES} min  $MODE${AT_SEED:+  seed=$AT_SEED}"
   pidof nw >/dev/null && { echo "a game is running (someone playing?) - stop it first"; RESULT=skipped; return 1; }
   [ -f "$JSF" ] || { echo "missing $JSF" >&2; return 1; }
   export POCKETMZ_TEST_PORT="$PORT" POCKETMZ_TEST_VIA_ES=0 POCKETMZ_HOTKEYS=0
@@ -115,7 +121,7 @@ run_one() {   # run_one <launcher> <minutes> <mode>
   OUT=$RZ/games/$ID/autotest-$STAMP; mkdir -p "$OUT"
   : > "$OUT/events.log"; : > "$OUT/hangs.txt"; : > "$OUT/shots.txt"
   echo "time,elapsed_s,phase,step,scene,map,ram_mb,swap_mb,avail_mb,psi_full10,fps,worst_gap_ms,heap_mb,img_keys_mpx" > "$OUT/timeline.csv"
-  RESULT=running; ENGINE=; GTITLE=; PEAK=0; LOW=0; WD=0; OOM_NEW=0; ELAPSED=0
+  TRACE="n/a"; RESULT=running; ENGINE=; GTITLE=; PEAK=0; LOW=0; WD=0; OOM_NEW=0; ELAPSED=0
   st_maps=0; st_battles=0; st_scenes=0; st_tp=0; st_stuck=0; st_errs=0
   local L=$RZ/games/$ID/run.log OOM0; OOM0=$(dmesg 2>/dev/null | grep -ci "out of memory")
   START_S=$(date +%s); END_S=$START_S
@@ -150,11 +156,13 @@ run_one() {   # run_one <launcher> <minutes> <mode>
   echo "write paths blocked: $(unq "$(rjs 'PMZ_AT.blocked()' 5)")"
   ENGINE=$(unq "$(rjs 'Utils.RPGMAKER_NAME+" "+Utils.RPGMAKER_VERSION' 5)")
   GTITLE=$(unq "$(rjs '$dataSystem.gameTitle' 5)" | tr -d '|,')
-  local opts="{mode:\"$MODE\",minutes:$MINUTES}"
+  local opts="{mode:\"$MODE\",minutes:$MINUTES${AT_SEED:+,seed:$AT_SEED}}"
   echo "driver: $(unq "$(rjs "PMZ_AT.start($opts)" 8)")  engine=$ENGINE"
 
   # --- monitor loop
+  # seeded: the driver's minutes are logic minutes (slower than wall-clock under load), so the wall-clock limit is generous
   START_S=$(date +%s); local limit=$(( MINUTES * 60 + 45 )) peak_base=-1 shots=0 last_peak=0
+  [ -n "$AT_SEED" ] && limit=$(( MINUTES * 120 + 120 ))
   local fr_last=-1 fr_since=$START_S ok_last=$START_S wd_seen=0 next_print=0 now el r e cur mm sw av psi tot
   while :; do
     now=$(date +%s); el=$(( now - START_S )); END_S=$now; ELAPSED=$el
@@ -247,6 +255,7 @@ if [ "$1" = "--all" ]; then ALL=1; shift; WHAT=; else WHAT="$1"; shift; fi
 MINS="${1:-15}"; MODE_ARG="${2:-play}"
 case "$MINS" in ''|*[!0-9]*) usage ;; esac
 case "$MODE_ARG" in play|tour) ;; *) usage ;; esac
+case "$AT_SEED" in *[!0-9]*) echo "AT_SEED must be a number" >&2; exit 2 ;; esac
 
 resolve() {   # launcher path for a path or a game id
   [ -f "$1" ] && { echo "$1"; return; }
