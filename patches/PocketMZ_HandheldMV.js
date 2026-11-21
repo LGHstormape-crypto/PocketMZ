@@ -518,6 +518,50 @@
             b._setDirty();
             b._callLoadListeners();
         };
+        // Menu background snapshots at the render scale (as PocketMZ_Handheld.js section 17). MV
+        // renders the stage into a game-size canvas (1600x1000 in a large game) and then blurs every
+        // pixel of it on the CPU: ~0.5 s per menu open. Here the render texture has the renderer's
+        // resolution, the small read-back becomes a downscaled bitmap of the game size, and blur()
+        // works on that small canvas.
+        const _snap = Bitmap.snap;
+        if (_snap) Bitmap.snap = function(stage) {
+            const R = Graphics._renderer, r = R && R.resolution;
+            if (!stage || !R || !(r < 0.99) || !R.extract || !Graphics.isWebGL() || window.PMZ_IMG_OFF) return _snap.apply(this, arguments);
+            let c = null;
+            try {
+                const w = Graphics.width, h = Graphics.height;
+                const rt = PIXI.RenderTexture.create(w, h, undefined, r);
+                R.render(stage, rt);
+                stage.worldTransform.identity();
+                c = R.extract.canvas(rt);
+                rt.destroy(true);
+                const bitmap = new Bitmap(1, 1);
+                if (bitmap.__canvas) { bitmap.__canvas.width = 0; bitmap.__canvas.height = 0; }
+                bitmap.__canvas = null; bitmap.__context = null; bitmap.__baseTexture = null;
+                adopt(bitmap, c, w, h);
+                PMZ_IMG.snaps = (PMZ_IMG.snaps || 0) + 1;
+                return bitmap;
+            } catch (e) {
+                if (c) { c.width = c.height = 0; }
+                return _snap.apply(this, arguments);
+            }
+        };
+        const _blurSmall = B.blur;
+        if (_blurSmall) B.blur = function() {
+            if (!small(this) || this._image.tagName !== "CANVAS") return _blurSmall.apply(this, arguments);
+            const c = this._image, t = document.createElement("canvas");
+            t.width = c.width; t.height = c.height;
+            const tc = t.getContext("2d");
+            tc.filter = "blur(" + Math.max(0.5, Math.round(2 * this._pmzScale * 10) / 10) + "px)";   // MV: ~2 px at full size
+            tc.drawImage(c, 0, 0);
+            const cc = c.getContext("2d");
+            cc.clearRect(0, 0, c.width, c.height);
+            cc.drawImage(t, 0, 0);
+            t.width = t.height = 0;
+            if (this.__baseTexture) this.__baseTexture.update();
+            this._setDirty();
+        };
+        PMZ_IMG.adopt = adopt;
         // a cached small PNG is requested instead of the original (plain file: no Decrypter);
         // _url stays the original url
         const _requestImage = B._requestImage;
@@ -649,6 +693,8 @@
             try {
                 if (b.__baseTexture) { b.__baseTexture.destroy(); b.__baseTexture = null; }
                 if (b.__canvas) { b.__canvas.width = 0; b.__canvas.height = 0; b.__canvas = null; b.__context = null; }
+                // a downscaled snapshot (section 6) keeps its pixels in a small canvas as _image
+                if (b._pmzScale && b._image && b._image.tagName === "CANVAS") { b._image.width = 0; b._image.height = 0; b._image = null; }
             } catch (e) { /* the window keeps working with its new contents */ }
         };
         // Window#_refreshBack / _refreshFrame make a new window-sized Bitmap for the back and the
@@ -808,6 +854,46 @@
                 }
             }
             return _onLoad.apply(this, arguments);
+        };
+    }
+
+    // 12. The current map's JSON text kept. Scene_Map#create loads the map file again every time
+    //     the map scene comes back (after the menu, a battle, a shop): a 2 MB map with 137 events
+    //     took 250-540 ms to read in an MV game (1.5 s cold) before parsing. The text of the last
+    //     loaded map stays in memory, and loading the same map again parses that text and runs
+    //     the engine's own onLoad (plugins' load hooks included), like a fresh load without the
+    //     file read. POCKETMZ_MAP_CACHE=off disables it.
+    if (window.DataManager && DataManager.loadDataFile && DataManager.onLoad &&
+        String((window.process && process.env && process.env.POCKETMZ_MAP_CACHE) || "on") !== "off") {
+        const MAP_TEXT = window.PMZ_MAP_TEXT = { src: "", text: "", hits: 0 };
+        const _loadDataFile = DataManager.loadDataFile;
+        DataManager.loadDataFile = function(name, src) {
+            if (name !== "$dataMap") return _loadDataFile.apply(this, arguments);
+            if (MAP_TEXT.src === src && MAP_TEXT.text) {
+                const text = MAP_TEXT.text;
+                window[name] = null;
+                MAP_TEXT.hits++;
+                setTimeout(() => {            // asynchronous like the file load
+                    let data;
+                    try { data = JSON.parse(text); } catch (e) {
+                        // not plain JSON (a data plugin transforms it): load normally from now on
+                        MAP_TEXT.src = ""; MAP_TEXT.text = ""; MAP_TEXT.off = true;
+                        return _loadDataFile.call(DataManager, name, src);
+                    }
+                    window[name] = data;
+                    DataManager.onLoad(window[name]);
+                }, 0);
+                return;
+            }
+            // read through the engine; keep the text the request returns
+            const _send = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function() {
+                this.addEventListener("load", () => {
+                    if (this.status < 400 && !MAP_TEXT.off && typeof this.responseText === "string") { MAP_TEXT.src = src; MAP_TEXT.text = this.responseText; }
+                });
+                return _send.apply(this, arguments);
+            };
+            try { return _loadDataFile.apply(this, arguments); } finally { XMLHttpRequest.prototype.send = _send; }
         };
     }
 

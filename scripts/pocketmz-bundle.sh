@@ -4,7 +4,7 @@
 #        pocketmz-bundle.sh --ports [dir]  a Ports package: <dir>/PocketMZ.sh + <dir>/PocketMZ/
 #                                          (pocketmz.tar, VERSION), default /storage/PocketMZ-ports-<version>;
 #                                          copy both into roms/ports, start PocketMZ from Ports
-# Contains rootfs.sqfs (the Debian/NW.js image), scripts, patches, README, LICENSE, the ES system
+# Contains rootfs.sqfs (the Debian/NW.js image; third-party notices inside, summary THIRD-PARTY.txt), scripts, patches, README, LICENSE, the ES system
 # file + Tools entry (es_systems_pocketmz.cfg, modules/) and pocketmz-install.sh.
 # Not included: games/ (thin copies and saves), home/ (browser profile), rootfs/ (maintenance dir).
 set -e
@@ -15,9 +15,12 @@ OUT="${1:-/storage/pocketmz-bundle-$(date +%Y%m%d).tar}"
 [ -f "$RZ/rootfs.sqfs" ] || { echo "no $RZ/rootfs.sqfs" >&2; exit 1; }
 cd "$RZ"
 LIST=""
-for f in rootfs.sqfs VERSION patches launcher vendor ports README.md LICENSE INTEGRATION.md es_systems_pocketmz.cfg modules pocketmz.gptk gkd-thermal *.sh *.py *.js; do [ -e "$f" ] && LIST="$LIST $f"; done
+for f in rootfs.sqfs VERSION patches launcher vendor ports README.md LICENSE THIRD-PARTY.txt INTEGRATION.md es_systems_pocketmz.cfg modules pocketmz.gptk gkd-thermal *.sh *.py *.js; do [ -e "$f" ] && LIST="$LIST $f"; done
 # the menu's user data (launcher/library) and the desktop preview sample are not packed
-tar -cf "$OUT" --exclude=launcher/library --exclude=launcher/dev-sample $LIST
+# old single-game dev tests and local helpers are not shipped (same as the public repository)
+NOSHIP="pocketmz-abes.sh pocketmz-entrytest.sh pocketmz-maptest.sh pocketmz-memlog.sh pocketmz-proftest.sh pocketmz-soak.sh battery-log.sh"
+EXCL=""; for n in $NOSHIP; do EXCL="$EXCL --exclude=$n"; done
+tar -cf "$OUT" --exclude=launcher/library --exclude=launcher/dev-sample $EXCL $LIST
 if [ -n "$PORTS" ]; then
   cp "$RZ/VERSION" "$PORTS/PocketMZ/VERSION"; cp "$RZ/ports/PocketMZ.sh" "$PORTS/PocketMZ.sh"; chmod +x "$PORTS/PocketMZ.sh"
   echo "Ports package: $PORTS (copy PocketMZ.sh and the PocketMZ folder into roms/ports)"

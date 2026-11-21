@@ -91,9 +91,10 @@
             scene: scene && scene.constructor.name, map: window.$gameMap && $gameMap.mapId(),
             evRunning: window.$gameMap && $gameMap.isEventRunning && $gameMap.isEventRunning(),
             inner: [innerWidth, innerHeight], canvas: c && [c.width, c.height], rect: r && [r.x, r.y, r.width, r.height].map(Math.round),
-            fps: window.Graphics && Graphics._fpsCounter && Math.round(Graphics._fpsCounter.fps),
+            fps: window.Graphics && (Graphics._fpsCounter ? Math.round(Graphics._fpsCounter.fps) : Graphics._fpsMeter ? Math.round(Graphics._fpsMeter.fps) : 0),   // MZ / MV
             heapMB: performance.memory && Math.round(performance.memory.usedJSHeapSize / 1048576),
-            imgCache: window.ImageManager && ImageManager._cache && Object.keys(ImageManager._cache).length,
+            imgCache: window.ImageManager && (ImageManager._cache ? Object.keys(ImageManager._cache).length
+                : ImageManager._imageCache && ImageManager._imageCache._items ? Object.keys(ImageManager._imageCache._items).length : 0),   // MZ / MV 1.6
             fonts: [...document.fonts].map(f => f.family + ":" + f.status),
             gl, timeline: D.timeline, errors: D.errors.slice(-10)
         };

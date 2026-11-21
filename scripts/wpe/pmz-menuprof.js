@@ -17,6 +17,17 @@
         obj[name].__mp = true;
     };
     wrap(SceneManager, "snapForBackground", "snap");
+    // map data: from loadMapData to the map json being parsed
+    const _lmd = DataManager.loadMapData;
+    DataManager.loadMapData = function () { this._mpT = now(); return _lmd.apply(this, arguments); };
+    const _onLoad = DataManager.onLoad;
+    DataManager.onLoad = function (object) {
+        const r = _onLoad.apply(this, arguments);
+        if (object === window.$dataMap && this._mpT) { mark("mapdata", now() - this._mpT); this._mpT = 0; }
+        return r;
+    };
+    const _cdo = Scene_Map.prototype.createDisplayObjects;
+    if (_cdo) Scene_Map.prototype.createDisplayObjects = function () { const t = now(); try { return _cdo.apply(this, arguments); } finally { mark("mapDisplay", now() - t); } };
     const _goto = SceneManager.goto, _push = SceneManager.push;
     const begin = (cls) => { R.cur = { scene: cls && cls.name, t0: now(), parts: [], imgs: [] }; };
     SceneManager.push = function (cls) { begin(cls); return _push.apply(this, arguments); };
@@ -33,10 +44,11 @@
     const _updateScene = SceneManager.updateScene;
     SceneManager.updateScene = function () {
         const s = this._scene;
-        const wasStarted = s && s._started;
+        const started = () => (s && (s.isStarted ? s._started : this._sceneStarted));   // MZ / MV
+        const wasStarted = started();
         const t = now();
         const r = _updateScene.apply(this, arguments);
-        if (s && !wasStarted && s._started && R.cur && !R.cur.done) {
+        if (s && !wasStarted && started() && R.cur && !R.cur.done) {
             mark("wait-ready", t - (this._mpCreated || t));
             mark("start", now() - t);
             R.cur.total = Math.round(now() - R.cur.t0);

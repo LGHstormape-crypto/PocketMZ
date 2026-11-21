@@ -17,6 +17,9 @@ rm -f "$ROOT/var/tmp/rootfs.sqfs"
 #   scipy/sympy/numpy/mpmath (pulled in as recommends of python3-fonttools; font subsetting
 #   needs only fontTools), NW.js UI languages other than ja / zh-CN / zh-TW / en-US
 # POCKETMZ_PACK_FULL=1 keeps the second group.
+# license notices of everything in the image (usr/share/doc is left out below): third-party/ is kept
+"$RZ/pocketmz-licenses.sh" "$ROOT" >/dev/null || { echo "license notices failed" >&2; umount "$ROOT/proc" "$ROOT/sys"; exit 1; }
+cp -f "$ROOT/usr/share/pocketmz/third-party/README.txt" "$RZ/THIRD-PARTY.txt"
 EX="$ROOT/var/tmp/pocketmz-pack.exclude"
 {
   printf '%s\n' 'proc/*' 'sys/*' 'dev/*' 'run/*' 'tmp/*' 'game/*' 'gamesrc/*' 'root/*' 'root/.*' \

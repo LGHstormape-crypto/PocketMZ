@@ -166,6 +166,10 @@
         var k2 = Object.keys(IM.cache._inner);
         for (var j = 0; j < k2.length; j++) { var en = IM.cache._inner[k2[j]]; b = en && en.item; if (b && b.width) px += b.width * b.height; }
         keys = k2.length;
+      } else if (IM._imageCache && IM._imageCache._items) { // MV 1.6: ImageCache, key -> {bitmap, touch}
+        var k3 = Object.keys(IM._imageCache._items);
+        for (var m = 0; m < k3.length; m++) { var it = IM._imageCache._items[k3[m]]; b = it && it.bitmap; if (b && b.width) px += b.width * b.height; }
+        keys = k3.length;
       }
       var mpx = px / 1e6;
       if (mpx > S.peakImgMpx) S.peakImgMpx = mpx;

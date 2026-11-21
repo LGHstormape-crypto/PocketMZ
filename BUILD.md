@@ -67,7 +67,7 @@ fc-cache -f
 
 ## 5. 打包只读镜像
 
-把根文件系统目录打包为只读镜像 `rootfs.sqfs`。默认会排除 locales、文档等内容。
+把根文件系统目录打包为只读镜像 `rootfs.sqfs`。默认会排除 locales、文档等内容；打包前 `pocketmz-licenses.sh` 会把所有软件包的版权与许可证声明、软件包清单（含源码包版本）和源码获取说明汇总到镜像内的 `/usr/share/pocketmz/third-party/`，摘要另存为 `THIRD-PARTY.txt` 随安装包发布。
 
 ```sh
 # Pack the rootfs into a read-only squashfs image (default: excludes locales, docs, etc.)
