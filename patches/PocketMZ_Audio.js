@@ -35,7 +35,7 @@
     const STATS = window.PMZ_STREAM = {
         created: 0, played: 0, destroyed: 0, errors: 0,
         decoded: 0, element: 0,     // backend chosen per buffer (a fallback counts in both)
-        underruns: 0, loops: 0, collected: 0, live: new Set(),
+        underruns: 0, underrunLog: [], loops: 0, collected: 0, live: new Set(),   // underrunLog: [s, ms late, name]
         open: () => workerStreams.size,     // streams the worker holds
     };
     // blob URLs of streams the game dropped without destroy() (MV only stops them)
@@ -55,7 +55,7 @@
 
     // ======== worker code: the helpers below run in the Worker (built from their source text) ========
     const TAPS = 32, HALF = TAPS / 2, PHASES = 256, BETA = 6;
-    const AHEAD = 6;            // seconds sent ahead of what the main thread has played (stalls of ~2.5 s at map loads)
+    const AHEAD = 10;           // seconds sent ahead of what the main thread has played (main-thread stalls of up to ~5 s)
     const QUEUE = 32;           // packets in the decoder at most
     const CHUNK_FIRST = 0.25, CHUNK = 0.5;
     const tables = new Map();
@@ -725,7 +725,11 @@
             src.connect(this._gain || WebAudio._masterGainNode || c.destination);
             const t = c.currentTime;
             if (!this._nextT || this._nextT < t + 0.01) {
-                if (this._nextT) STATS.underruns++;
+                if (this._nextT) {
+                    STATS.underruns++;
+                    STATS.underrunLog.push([Math.round(performance.now() / 1000), Math.round((t - this._nextT) * 1000), this.name]);
+                    if (STATS.underrunLog.length > 20) STATS.underrunLog.shift();
+                }
                 this._nextT = Math.ceil((t + LEAD) * sr) / sr;    // on a frame, so later chunks are too
             }
             const item = { src, t0: this._nextT, dur: n / sr / this._pitch, pos0: m.pos0, rate: this._pitch, sec: n / sr };
