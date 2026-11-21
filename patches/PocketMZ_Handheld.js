@@ -1463,6 +1463,29 @@
         };
     }
 
+    // 22. Battle system images loaded early. MZ loads Shadow2, Weapons1-3 and States only when the
+    //     first battle starts (MV loads them at boot): 1-2 s more for the first battle. They are
+    //     requested 3 s after the first map has started (the system cache is never cleared; a few MB).
+    //     POCKETMZ_PRELOAD_SYSTEM=off disables it.
+    if (window.Scene_Map && window.Spriteset_Battle && Spriteset_Battle.prototype.loadSystemImages && window.ImageManager &&
+        String((window.process && process.env && process.env.POCKETMZ_PRELOAD_SYSTEM) || "on").toLowerCase() !== "off") {
+        let preloaded = false;
+        const _startPre = Scene_Map.prototype.start;
+        Scene_Map.prototype.start = function() {
+            const r = _startPre.apply(this, arguments);
+            if (!preloaded) {
+                preloaded = true;
+                setTimeout(() => {
+                    try {
+                        Spriteset_Battle.prototype.loadSystemImages.call(Object.create(Spriteset_Battle.prototype));
+                        ImageManager.loadSystem("States");
+                    } catch (e) { /* a plugin changed the spriteset */ }
+                }, 3000);
+            }
+            return r;
+        };
+    }
+
     // 7. Audio sample rate
     if (AUDIO_SAMPLE_RATE > 0) {
         WebAudio._createContext = function() {
