@@ -1405,6 +1405,64 @@
         };
     }
 
+    // 21. Images of the previous map kept across a map transfer. Scene_Map#onTransfer calls
+    //     ImageManager.clear(), which destroys every cached bitmap; moving between two maps with the
+    //     same tileset then loads and decodes all 9 tileset images and the character sheets again:
+    //     1.1-1.6 s of a 1.8-2.9 s transfer. Ready tileset, character and parallax bitmaps
+    //     (<= 12 million pixels in total) are set aside by clear() instead of destroyed, handed back
+    //     when the new map asks for the same url, and whatever is still unclaimed is destroyed once
+    //     Scene_Map#start has run. Nothing is kept while MemAvailable is below 280 MB.
+    //     POCKETMZ_KEEP_IMAGES=off disables it.
+    if (window.ImageManager && ImageManager.clear && ImageManager.loadBitmapFromUrl && window.Scene_Map &&
+        String((window.process && process.env && process.env.POCKETMZ_KEEP_IMAGES) || "on").toLowerCase() !== "off") {
+        const KEEP = new Map(), KEEP_PX = 12000000, KEEP_MIN_MEM = 280 * 1024;   // pixels; kB
+        const PMZ_KEEP = window.PMZ_KEEP = { kept: 0, reused: 0, dropped: 0, size: () => KEEP.size };
+        const keepable = url => /(^|\/)img\/(tilesets|characters|parallaxes)\//.test(String(url));
+        const memOk = () => {
+            try {
+                const m = /MemAvailable:\s+(\d+)/.exec(require("fs").readFileSync("/proc/meminfo", "utf8"));
+                return !m || Number(m[1]) >= KEEP_MIN_MEM;
+            } catch (e) { return true; }
+        };
+        const destroy = b => { try { b.destroy(); } catch (e) { /* already gone */ } };
+        const dropKept = () => {
+            for (const b of KEEP.values()) { destroy(b); PMZ_KEEP.dropped++; }
+            KEEP.clear();
+        };
+        ImageManager.clear = function() {
+            dropKept();                                  // a second clear without a map start between
+            const cache = this._cache || {};
+            const keep = memOk();
+            let px = 0;
+            for (const url in cache) {
+                const b = cache[url];
+                let ok = false;
+                try {
+                    ok = keep && keepable(url) && b.isReady() && !b.isError() &&
+                         px + b.width * b.height <= KEEP_PX;
+                } catch (e) { ok = false; }
+                if (ok) { px += b.width * b.height; KEEP.set(url, b); PMZ_KEEP.kept++; }
+                else destroy(b);
+            }
+            this._cache = {};
+        };
+        const _loadBitmapFromUrl = ImageManager.loadBitmapFromUrl;
+        ImageManager.loadBitmapFromUrl = function(url) {
+            if (!String(url).includes("/system/") && this._cache && !this._cache[url] && KEEP.has(url)) {
+                const b = KEEP.get(url);
+                KEEP.delete(url);
+                this._cache[url] = b;
+                PMZ_KEEP.reused++;
+                return b;
+            }
+            return _loadBitmapFromUrl.apply(this, arguments);
+        };
+        const _mapStart = Scene_Map.prototype.start;
+        Scene_Map.prototype.start = function() {
+            try { return _mapStart.apply(this, arguments); } finally { dropKept(); }
+        };
+    }
+
     // 7. Audio sample rate
     if (AUDIO_SAMPLE_RATE > 0) {
         WebAudio._createContext = function() {
