@@ -123,6 +123,7 @@ class WebGLRenderingContext {
       preserveDrawingBuffer: false, powerPreference: 'default', failIfMajorPerformanceCaveat: false, desynchronized: false }, attrs || {});
     this._flipY = false; this._premul = false;
     this._fb = null;                                    // currently bound WebGLFramebuffer (null = default/window)
+    this._defaultFbDirty = false;                       // true once this frame draws/clears the default framebuffer (skip swap on untouched frames)
     this._vp = [0, 0, canvas.width, canvas.height];     // viewport/scissor as the game sees them (canvas coordinates)
     this._sc = [0, 0, canvas.width, canvas.height];
     this._exts = null; this._extObjs = {}; this.stubs = new Set();
@@ -187,7 +188,7 @@ class WebGLRenderingContext {
   blendEquationSeparate(a, b) { this._pmz.blendEquationSeparate(a, b); }
   blendFunc(a, b) { this._pmz.blendFunc(a, b); }
   blendFuncSeparate(a, b, c, d) { this._pmz.blendFuncSeparate(a, b, c, d); }
-  clear(m) { this._pmz.clear(m); }
+  clear(m) { if (!this._fb) this._defaultFbDirty = true; this._pmz.clear(m); }
   clearColor(r, g, b, a) { this._pmz.clearColor(r, g, b, a); }
   clearDepth(d) { this._pmz.clearDepth(d); }
   clearStencil(s) { this._pmz.clearStencil(s); }
@@ -278,8 +279,8 @@ class WebGLRenderingContext {
           break;
         case 'ANGLE_instanced_arrays':
           o = { VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE: 0x88FE,
-            drawArraysInstancedANGLE: (m, f, c, n) => pm.drawArraysInstanced(m, f, c, n),
-            drawElementsInstancedANGLE: (m, c, t, off, n) => pm.drawElementsInstanced(m, c, t, off, n),
+            drawArraysInstancedANGLE: (m, f, c, n) => { if (!this._fb) this._defaultFbDirty = true; pm.drawArraysInstanced(m, f, c, n); },
+            drawElementsInstancedANGLE: (m, c, t, off, n) => { if (!this._fb) this._defaultFbDirty = true; pm.drawElementsInstanced(m, c, t, off, n); },
             vertexAttribDivisorANGLE: (i, d) => pm.vertexAttribDivisor(i, d) };
           break;
       }
@@ -477,8 +478,8 @@ class WebGLRenderingContext {
   vertexAttrib4fv(i, v) { this._pmz.vertexAttrib4fv(i, f32(v)); }
   getVertexAttrib(i, p) { const v = this._pmz.getVertexAttrib(i, p); return p === GL.VERTEX_ATTRIB_ARRAY_ENABLED || p === GL.VERTEX_ATTRIB_ARRAY_NORMALIZED ? v !== 0 : v; }
   getVertexAttribOffset(i, p) { return this._pmz.getVertexAttribOffset(i, p); }
-  drawArrays(m, f, c) { this._pmz.drawArrays(m, f, c); }
-  drawElements(m, c, t, o) { this._pmz.drawElements(m, c, t, o); }
+  drawArrays(m, f, c) { if (!this._fb) this._defaultFbDirty = true; this._pmz.drawArrays(m, f, c); }
+  drawElements(m, c, t, o) { if (!this._fb) this._defaultFbDirty = true; this._pmz.drawElements(m, c, t, o); }
 }
 Object.assign(WebGLRenderingContext, GL);
 Object.assign(WebGLRenderingContext.prototype, GL);

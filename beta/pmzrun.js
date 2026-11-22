@@ -136,7 +136,7 @@ const imageReg = new FinalizationRegistry(h => { acct.imageLive -= h.n; acct.ima
 // ---------- GL window + frame loop ----------
 const warned = new Set(), warnings = [], glMessages = [], frames = [];
 function warnOnce(m) { if (!warned.has(m)) { warned.add(m); warnings.push(m); log('WARN', m); } }
-let glInfo = null, mainGL = null, shotPending = null, shotInfo = null, lastFrameStart = 0;
+let glInfo = null, mainGL = null, shotPending = null, shotInfo = null, lastFrameStart = 0, nextTickAt = 0;
 const shotInfos = {};
 const timings = {};
 function initWindow() {
@@ -175,20 +175,30 @@ function frameLoop() {
   }
   const fsVid = visibleFullscreenVideo();
   if (rafPending.size || fsVid) {
+    if (!nextTickAt || tStart - nextTickAt > 50) nextTickAt = tStart;
+    nextTickAt += 1000 / 60;
+    if (mainGL) mainGL._defaultFbDirty = false;
     const cbs = [...rafPending.values()]; rafPending.clear(); const ts = performance.now();
     for (const f of cbs) { try { f(ts); } catch (e) { otherErrors.push('raf: ' + e.stack); log('RAF ERROR', e && e.stack); } }
-    if (fsVid && pmz.vidDrawFullscreen) pmz.vidDrawFullscreen(fsVid._vidId, glInfo.drawableWidth, glInfo.drawableHeight);
-    try { overlayFrame(); } catch (e) { if (!overlayFrame.failed) { overlayFrame.failed = 1; otherErrors.push('overlay: ' + e.stack); log('OVERLAY ERROR', e && e.stack); } }
+    let drew = !!(mainGL && mainGL._defaultFbDirty);
+    if (fsVid && pmz.vidDrawFullscreen) { pmz.vidDrawFullscreen(fsVid._vidId, glInfo.drawableWidth, glInfo.drawableHeight); drew = true; }
+    let ovSwapped = false;
+    try { ovSwapped = !!overlayFrame(drew); } catch (e) { if (!overlayFrame.failed) { overlayFrame.failed = 1; otherErrors.push('overlay: ' + e.stack); log('OVERLAY ERROR', e && e.stack); } }
     const tJs = nowMs();
-    if (shotPending) takeShot();
-    pmz.swap();
-    const tEnd = nowMs();
-    if (PLAY && frames.length > 4000) frames.splice(0, 2000);   // play mode runs for hours
-    frames.push({ t: tEnd, dt: lastFrameStart ? tStart - lastFrameStart : 0, js: tJs - tStart, swap: tEnd - tJs });
-    if (frames.length === 1) { timings.firstFrameAt = proc.uptime(); log('first frame'); }
-    lastFrameStart = tStart;
-    setImmediate(frameLoop);
-  } else { lastFrameStart = 0; setTimeout(frameLoop, 4); }   // nothing asked to render: just keep polling
+    let tEnd = tJs;
+    if (drew || ovSwapped) {
+      if (shotPending) takeShot();
+      pmz.swap();
+      tEnd = nowMs();
+      if (PLAY && frames.length > 4000) frames.splice(0, 2000);   // play mode runs for hours
+      frames.push({ t: tEnd, dt: lastFrameStart ? tStart - lastFrameStart : 0, js: tJs - tStart, swap: tEnd - tJs });
+      if (frames.length === 1) { timings.firstFrameAt = proc.uptime(); log('first frame'); }
+      lastFrameStart = tStart;
+    }
+    const rem = nextTickAt - tEnd;
+    if (rem > 1.5) setTimeout(frameLoop, Math.round(rem));
+    else { if (rem < -50) nextTickAt = tEnd; setImmediate(frameLoop); }
+  } else { lastFrameStart = 0; nextTickAt = 0; setTimeout(frameLoop, 4); }   // nothing asked to render: just keep polling
 }
 // screenshot of the window (before swap, so the back buffer still holds the frame): saved as PNG
 function takeShot() {
@@ -655,17 +665,35 @@ for (const k of ['Node', 'Element', 'Event', 'MouseEvent', 'KeyboardEvent', 'Tou
 // There is no DOM/CSS here: overlay.js draws what the menu builds (panel, fps box, toast, hint) onto a 640x480 canvas, which is rendered with PIXI on
 // top of the game after Graphics.render (window space -> game space: the game canvas is letterboxed into the window by webgl.js).
 let ov = null, ovTex = null, ovCont = null, ovSprite = null;
-function overlayFrame() {
-  if (typeof PIXI === 'undefined' || typeof Graphics === 'undefined') return;
-  if (MV ? !(Graphics._renderer && Graphics._renderer.gl) : !(Graphics.app && Graphics.app.renderer)) return;   // MV: PIXI v4 Graphics._renderer (WebGLRenderer)
+function overlayFrame(gameDrew) {
+  if (typeof PIXI === 'undefined' || typeof Graphics === 'undefined') return false;
+  if (MV ? !(Graphics._renderer && Graphics._renderer.gl) : !(Graphics.app && Graphics.app.renderer)) return false;   // MV: PIXI v4 Graphics._renderer (WebGLRenderer)
   if (!ov) {
+    if (!gameDrew) return false;
     ov = require('/opt/beta/overlay.js').create({ doc });
     ovTex = PIXI.Texture.from(ov.canvas); ovSprite = new PIXI.Sprite(ovTex); ovCont = new PIXI.Container(); ovCont.addChild(ovSprite);
     // warm-up at boot (invisible): texture allocation / first render of the overlay path cost ~0.7 s when the menu is opened for the first time
     const R0 = MV ? Graphics._renderer : Graphics.app.renderer, last0 = R0._lastObjectRendered; ovSprite.alpha = 0; ovTex.baseTexture.update();
     (MV ? PIXI.WebGLRenderer : PIXI.Renderer).prototype.render.call(R0, ovCont, undefined, false); R0._lastObjectRendered = last0; ovSprite.alpha = 1;
   }
-  const st = ov.update(); if (st !== 'draw' && st !== 'same') return;
+  const st = ov.update();
+  if (!gameDrew) {
+    // Only redraw + swap while the game is idle/paused when the overlay itself changed (menu open/move/close, toast)
+    if (st !== 'draw' && st !== 'hide') return false;
+    const R = MV ? Graphics._renderer : Graphics.app.renderer, last = R._lastObjectRendered;
+    const protoRender = (MV ? PIXI.WebGLRenderer : PIXI.Renderer).prototype.render;
+    if (last) { protoRender.call(R, last); R._lastObjectRendered = last; }
+    if (st === 'draw') {
+      ovTex.baseTexture.update();
+      const gw = Graphics.width, gh = Graphics.height, s = Math.min(ov.W / gw, ov.H / gh);
+      ovSprite.scale.set(1 / s); ovSprite.position.set(-(ov.W - gw * s) / 2 / s, -(ov.H - gh * s) / 2 / s);
+      protoRender.call(R, ovCont, undefined, false);
+      R._lastObjectRendered = last;
+      overlayFrame.n = (overlayFrame.n || 0) + 1;
+    }
+    return true;
+  }
+  if (st !== 'draw' && st !== 'same') return false;
   if (st === 'draw') ovTex.baseTexture.update();
   const gw = Graphics.width, gh = Graphics.height, s = Math.min(ov.W / gw, ov.H / gh);
   ovSprite.scale.set(1 / s); ovSprite.position.set(-(ov.W - gw * s) / 2 / s, -(ov.H - gh * s) / 2 / s);
@@ -673,6 +701,7 @@ function overlayFrame() {
   (MV ? PIXI.WebGLRenderer : PIXI.Renderer).prototype.render.call(R, ovCont, undefined, false);   // PIXI 5.3: render(object, renderTexture, clear); no clear = drawn over the game frame
   R._lastObjectRendered = last;   // the prototype's render: patches that count/wrap instance.render do not see it
   overlayFrame.n = (overlayFrame.n || 0) + 1;
+  return false;
 }
 
 // ---------- input: SDL events -> engine keyboard events ----------

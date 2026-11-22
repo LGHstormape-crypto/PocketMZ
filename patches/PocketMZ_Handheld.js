@@ -456,27 +456,34 @@
                 return _push.apply(this, arguments);
             };
         }
-        if (window.Sprite_Animation) {
-            const A = Sprite_Animation.prototype;
-            const _proj = A.setProjectionMatrix, _view = A.setViewport;
-            A.setProjectionMatrix = function(renderer) {
-                if (renderer.resolution === 1) return _proj.call(this, renderer);
-                const x = this._mirror ? -1 : 1;
-                const p = -(this._viewportSize / Graphics.height);
-                Graphics.effekseer.setProjectionMatrix([x, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, p, 0, 0, 0, 1]);
-            };
-            A.setViewport = function(renderer) {
-                const r = renderer.resolution;
-                if (r === 1) return _view.call(this, renderer);
-                const vw = this._viewportSize, vh = this._viewportSize;
-                const vx = this._animation.offsetX - vw / 2;
-                const vy = this._animation.offsetY - vh / 2;
-                let pos;
-                if (this._animation.displayType === 2) pos = { x: Graphics.width / 2, y: Graphics.height / 2 };
-                else pos = this.targetPosition(renderer);
-                renderer.gl.viewport((vx + pos.x) * r, (vy + pos.y) * r, vw * r, vh * r);
-            };
-        }
+    }
+    // 12b. Effekseer projection & viewport: stock MZ assumes Spriteset_Base always renders
+    //      into an offscreen FBO (via its always-on ColorFilter), where Y=0 is at the top and
+    //      projection uses y=-1. Section 6 skips neutral ColorFilter so the scene draws straight
+    //      to the default framebuffer (Y=0 at bottom, +Y up): flip projection y and viewport Y
+    //      when not in a RenderTexture so animations match stock orientation and position.
+    if (window.Sprite_Animation) {
+        const A = Sprite_Animation.prototype;
+        A.setProjectionMatrix = function(renderer) {
+            const inFbo = !!(renderer.renderTexture && renderer.renderTexture.current);
+            const x = this._mirror ? -1 : 1;
+            const y = inFbo ? -1 : 1;
+            const p = -(this._viewportSize / Graphics.height);
+            Graphics.effekseer.setProjectionMatrix([x, 0, 0, 0, 0, y, 0, 0, 0, 0, 1, p, 0, 0, 0, 1]);
+        };
+        A.setViewport = function(renderer) {
+            const r = renderer.resolution || 1;
+            const inFbo = !!(renderer.renderTexture && renderer.renderTexture.current);
+            const vw = this._viewportSize, vh = this._viewportSize;
+            const vx = this._animation.offsetX - vw / 2;
+            const vy = this._animation.offsetY - vh / 2;
+            let pos;
+            if (this._animation.displayType === 2) pos = { x: Graphics.width / 2, y: Graphics.height / 2 };
+            else pos = this.targetPosition(renderer);
+            const gx = (vx + pos.x) * r;
+            const gy = inFbo ? (vy + pos.y) * r : renderer.view.height - (vy + pos.y + vh) * r;
+            renderer.gl.viewport(gx, gy, vw * r, vh * r);
+        };
     }
 
     // 13. Status sprites (gauges, names, state icons) of hidden or closed windows are not
