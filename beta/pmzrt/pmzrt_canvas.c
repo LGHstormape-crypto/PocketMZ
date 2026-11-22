@@ -712,30 +712,35 @@ DEFR(textTimes, 0, return ret_arr_d(env, g_tt, 3);)
 // (battle log: the same line every frame). The coverage of the stroke is kept as an A8 mask per (text, font, line style, sub-pixel origin) and painted with
 // the current colour: same geometry and rasteriser, so the same pixels (+-1 level). Only for solid colours, no dashes, translate(+x-scale)-only transforms.
 // PMZ_TEXTCACHE=0 turns it off.
-#define SC_N 48
-typedef struct { char *text; char font[160]; double lw, miter, tol, fx, fy, sx; int join, cap; unsigned epoch; cairo_surface_t *mask; int bx, by; unsigned long used; size_t bytes; } SCache;
+#define SC_N 128
+typedef struct { char *text; char font[160]; double lw, miter, tol, fx, fy, sx, sy; int join, cap; unsigned epoch; cairo_surface_t *mask; int bx, by; unsigned long used; size_t bytes; } SCache;
 static SCache g_sc[SC_N]; static unsigned long g_scTick; static size_t g_scBytes; static int g_scOn = -1; static double g_scHit, g_scMiss;
 #define SC_MAXBYTES (6u << 20)
 static void sc_free(SCache *e) { if (e->mask) cairo_surface_destroy(e->mask); free(e->text); g_scBytes -= e->bytes; memset(e, 0, sizeof *e); }
 // returns 1 when the stroke was painted from the cache (hit or freshly built), 0 = caller strokes the layout path itself
-static int stroke_text_cached(Cv *c, const char *text, double base, double sx) {
+static int stroke_text_cached(Cv *c, const char *text, double base, double sx, const PangoRectangle *ink) {
+  (void)sx;
   if (g_scOn < 0) { const char *e = getenv("PMZ_TEXTCACHE"); g_scOn = !(e && e[0] == '0'); }
   State *s = &c->st; cairo_t *cr = c->cr;
   if (!g_scOn || s->stroke.pat || s->ndash || strlen(text) > 160) return 0;
   cairo_matrix_t m; cairo_get_matrix(cr, &m);
-  if (fabs(m.xx - sx) > 1e-9 || fabs(m.yy - 1) > 1e-9 || m.xy != 0 || m.yx != 0 || !isfinite(m.x0) || !isfinite(m.y0)) return 0;
-  double fx = m.x0 - floor(m.x0), fy = m.y0 - floor(m.y0);
+  if (!(m.xx > 0) || !(m.yy > 0) || m.xy != 0 || m.yx != 0 || !isfinite(m.xx) || !isfinite(m.yy) || !isfinite(m.x0) || !isfinite(m.y0)) return 0;
+  int ix0 = (int)floor(m.x0), iy0 = (int)floor(m.y0);
+  double fx = m.x0 - ix0, fy = m.y0 - iy0;
   SCache *e = NULL;
   for (int i = 0; i < SC_N; i++) { SCache *q = &g_sc[i];
     if (q->mask && q->epoch == g_fontEpoch && q->lw == s->lw && q->miter == s->miter && q->join == (int)s->join && q->cap == (int)s->cap && q->tol == g_text_tol &&
-        q->fx == fx && q->fy == fy && q->sx == sx && !strcmp(q->text, text) && !strcmp(q->font, s->fontStr)) { e = q; break; } }
+        fabs(q->fx - fx) < 1e-4 && fabs(q->fy - fy) < 1e-4 && fabs(q->sx - m.xx) < 1e-6 && fabs(q->sy - m.yy) < 1e-6 && !strcmp(q->text, text) && !strcmp(q->font, s->fontStr)) { e = q; break; } }
   if (e) g_scHit++;
   else {
     g_scMiss++;
-    cairo_move_to(cr, 0, -base); pango_cairo_layout_path(cr, c->layout); setup_stroke(c);
-    double x1, y1, x2, y2; cairo_stroke_extents(cr, &x1, &y1, &x2, &y2); cairo_new_path(cr); cairo_move_to(cr, 0, -base);   // the caller continues from this point when we return 0
-    if (!(x2 > x1) || !isfinite(x1 + x2 + y1 + y2)) return 0;
-    int bx = (int)floor(x1 * sx + m.x0) - 1, by = (int)floor(y1 + m.y0) - 1, ex = (int)ceil(x2 * sx + m.x0) + 1, ey = (int)ceil(y2 + m.y0) + 1, w = ex - bx, h = ey - by;
+    if (!ink || ink->width <= 0 || ink->height <= 0) return 0;
+    double pad = s->lw * (s->join == CAIRO_LINE_JOIN_MITER ? fmax(1.0, s->miter) : 0.6) + 2.0;
+    double x1 = ink->x / (double)PANGO_SCALE - pad, y1 = ink->y / (double)PANGO_SCALE - base - pad;
+    double x2 = (ink->x + ink->width) / (double)PANGO_SCALE + pad, y2 = (ink->y + ink->height) / (double)PANGO_SCALE - base + pad;
+    int rbx = (int)floor(x1 * m.xx + fx) - 1, rby = (int)floor(y1 * m.yy + fy) - 1;
+    int rex = (int)ceil(x2 * m.xx + fx) + 1, rey = (int)ceil(y2 * m.yy + fy) + 1;
+    int w = rex - rbx, h = rey - rby;
     if (w <= 0 || h <= 0 || (size_t)w * h > 600000) return 0;
     size_t bytes = (size_t)w * h;
     int slot = -1; unsigned long oldest = ~0ul;
@@ -745,17 +750,17 @@ static int stroke_text_cached(Cv *c, const char *text, double base, double sx) {
     if (g_sc[slot].mask) sc_free(&g_sc[slot]);
     cairo_surface_t *ms = cairo_image_surface_create(CAIRO_FORMAT_A8, w, h);
     if (cairo_surface_status(ms) != CAIRO_STATUS_SUCCESS) { cairo_surface_destroy(ms); return 0; }
-    cairo_t *c2 = cairo_create(ms); cairo_matrix_t m2 = { sx, 0, 0, 1, m.x0 - bx, m.y0 - by }; cairo_set_matrix(c2, &m2);
+    cairo_t *c2 = cairo_create(ms); cairo_matrix_t m2 = { m.xx, 0, 0, m.yy, fx - rbx, fy - rby }; cairo_set_matrix(c2, &m2);
     cairo_set_tolerance(c2, g_text_tol); cairo_set_line_width(c2, s->lw); cairo_set_line_join(c2, s->join); cairo_set_line_cap(c2, s->cap); cairo_set_miter_limit(c2, s->miter);
     cairo_set_source_rgba(c2, 1, 1, 1, 1); cairo_move_to(c2, 0, -base); pango_cairo_layout_path(c2, c->layout); cairo_stroke(c2); cairo_destroy(c2);
     e = &g_sc[slot]; e->mask = ms; e->text = strdup(text); snprintf(e->font, sizeof e->font, "%s", s->fontStr); e->lw = s->lw; e->miter = s->miter; e->tol = g_text_tol;
-    e->join = s->join; e->cap = s->cap; e->fx = fx; e->fy = fy; e->sx = sx; e->epoch = g_fontEpoch; e->bx = bx; e->by = by; e->bytes = bytes; g_scBytes += bytes;
+    e->join = s->join; e->cap = s->cap; e->fx = fx; e->fy = fy; e->sx = m.xx; e->sy = m.yy; e->epoch = g_fontEpoch; e->bx = rbx; e->by = rby; e->bytes = bytes; g_scBytes += bytes;
   }
   e->used = ++g_scTick;
   Paint *p = &s->stroke;
   cairo_save(cr); cairo_identity_matrix(cr);
   cairo_set_source_rgba(cr, p->rgba[0], p->rgba[1], p->rgba[2], p->rgba[3] * s->alpha);
-  cairo_mask_surface(cr, e->mask, e->bx, e->by);
+  cairo_mask_surface(cr, e->mask, ix0 + e->bx, iy0 + e->by);
   cairo_restore(cr);
   return 1;
 }
@@ -774,7 +779,7 @@ DEF(cvText, 6, Cv *c = CV(0); char *t = arg_utf8(env, a_[1]);
     cairo_save(cr); cairo_translate(cr, D(2) + off, D(3) + shift); if (sx != 1) cairo_scale(cr, sx, 1); cairo_move_to(cr, 0, -base);
     if (stroke) {
       cairo_set_tolerance(cr, g_text_tol);
-      if (!stroke_text_cached(c, t, base, sx)) {
+      if (!stroke_text_cached(c, t, base, sx, &ink)) {
         double t0 = now_us(); pango_cairo_layout_path(cr, c->layout); double t1 = now_us(); paint_path(c, 1, 0); double t2 = now_us();
         g_tt[0]++; g_tt[1] += t1 - t0; g_tt[2] += t2 - t1;
       }

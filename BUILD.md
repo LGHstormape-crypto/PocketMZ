@@ -145,5 +145,5 @@ sh beta/beta-image.sh
 ## 8. 注意事项
 
 - 根文件系统必须位于 ext4，不能是 exFAT。
-- 运行环境需要 panfrost GPU 驱动，否则浏览器没有 WebGL。
+- 默认运行时 α（NW.js）需要 `panfrost` GPU 驱动（否则浏览器没有 WebGL）；β 运行时支持运行时加载 GLES 与宿主驱动直通（`POCKETMZ_HOST_GL=auto|1|0`、`PMZ_GLES=2`、`PMZ_GPU_WORKAROUNDS`、`SDL_VIDEODRIVER`），可在闭源 `libmali` 驱动下运行。
 - 游戏本体不进入运行环境，原游戏文件夹不被修改。

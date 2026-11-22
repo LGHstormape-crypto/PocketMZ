@@ -7,7 +7,7 @@
 HOST=gkd-rocknix
 cd "$(dirname "$0")/.." || exit 1
 [ $# -gt 0 ] || { echo "usage: $0 <file>..." >&2; exit 1; }
-if ssh "$HOST" 'pidof nw >/dev/null'; then echo "a game is running on the handheld - not deploying" >&2; exit 1; fi
+if ssh "$HOST" 'pidof nw >/dev/null || pidof node >/dev/null'; then echo "a game is running on the handheld - not deploying" >&2; exit 1; fi
 ssh "$HOST" 'rm -rf /storage/pocketmz/.deploy && mkdir -p /storage/pocketmz/.deploy' || exit 1
 for f in "$@"; do
   [ -f "$f" ] || f="scripts/$f"
@@ -19,6 +19,7 @@ for f in "$@"; do
   n=$(basename "$f")
   case "$f" in
     patches/*) dst=/storage/pocketmz/patches ;;
+    beta/*) dst=/storage/pocketmz/beta ;;
     */modules/*|modules/*) dst=/storage/pocketmz/modules ;;
     */launcher/*|launcher/*) dst=/storage/pocketmz/launcher ;;
     */ports/*|ports/*) dst=/storage/pocketmz/ports ;;

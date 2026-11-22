@@ -6,7 +6,8 @@
 
 ## 前提
 
-- GPU 驱动必须是 **panfrost**：ES → 系统设置 → GPU DRIVER → panfrost，然后重启。libmali 驱动下浏览器拿不到 WebGL。
+- 默认运行时（NW.js）要求 GPU 驱动为 **panfrost**：ES → 系统设置 → GPU DRIVER → panfrost，然后重启（libmali 下浏览器拿不到 WebGL）。
+- 如果安装了实验性 **β 运行时**并在设置或游戏内 F2 菜单中选择 `β` 或「自动」，则可在闭源 **libmali** 驱动下直接运行（启动器会自动直通宿主 GL 库）。
 
 ## 添加游戏
 

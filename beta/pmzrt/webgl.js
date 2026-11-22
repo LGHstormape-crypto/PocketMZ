@@ -106,8 +106,15 @@ const id = o => (o ? o._id : 0);
 const f32 = a => (a instanceof Float32Array ? a : Float32Array.from(a));
 const i32 = a => (a instanceof Int32Array ? a : Int32Array.from(a));
 
+// Driver workaround table matched against (vendor + ' ' + renderer + ' ' + version).
+// Override via PMZ_GPU_WORKAROUNDS="flag1,flag2" or "none". Supported flags:
+//   no_buffer_orphan, no_vao, no_instancing, no_highp_frag, no_packed_depth_stencil
+const GPU_WORKAROUND_RULES = [
+  { match: /Mali-400|Mali-450/i, flags: ['no_highp_frag'] },
+];
+
 class WebGLRenderingContext {
-  // opts: { pmz, drawableWidth, drawableHeight, es3, debug (bool), onWarn(msg) }
+  // opts: { pmz, drawableWidth, drawableHeight, es3, hasVao, hasInstancing, gpuWorkarounds, debug (bool), onWarn(msg) }
   constructor(canvas, attrs, opts) {
     this.canvas = canvas;
     this._pmz = opts.pmz; this._dw = opts.drawableWidth; this._dh = opts.drawableHeight; this._es3 = !!opts.es3;
@@ -123,6 +130,31 @@ class WebGLRenderingContext {
     const p = this._pmz;
     this._glExt = ' ' + p.getString(0x1F03).replace(/GL_/g, '') + ' ';
     this._vendor = p.getString(GL.VENDOR); this._renderer = p.getString(GL.RENDERER); this._version = p.getString(GL.VERSION);
+    const idStr = this._vendor + ' ' + this._renderer + ' ' + this._version;
+    const wa = new Set();
+    const waEnv = (opts.gpuWorkarounds || '').trim();
+    if (waEnv !== 'none') {
+      for (const r of GPU_WORKAROUND_RULES) if (r.match.test(idStr)) for (const f of r.flags) wa.add(f);
+      if (waEnv) for (const f of waEnv.split(',')) if (f.trim()) wa.add(f.trim());
+    }
+    this.workarounds = [...wa];
+    if (!opts.probe && wa.has('no_buffer_orphan') && p.setOrphan) p.setOrphan(false);
+    const hasVaoOpt = opts.hasVao !== undefined ? !!opts.hasVao : this._es3;
+    const hasInstOpt = opts.hasInstancing !== undefined ? !!opts.hasInstancing : this._es3;
+    this._hasVao = hasVaoOpt && !wa.has('no_vao');
+    this._hasInstancing = hasInstOpt && !wa.has('no_instancing');
+    this._hasUintIndex = this._es3 || this._glExt.includes(' OES_element_index_uint ');
+    this._packedDS = (this._es3 || this._glExt.includes(' OES_packed_depth_stencil ')) && !wa.has('no_packed_depth_stencil');
+    const hp = p.getShaderPrecisionFormat(GL.FRAGMENT_SHADER, GL.HIGH_FLOAT);
+    this._fragHighp = !wa.has('no_highp_frag') && hp[2] > 0;
+    this.caps = {
+      es3: this._es3, hasVao: this._hasVao, hasInstancing: this._hasInstancing,
+      uintIndex: this._hasUintIndex, packedDS: this._packedDS,
+      fragHighp: this._fragHighp ? hp : [0, 0, 0],
+      maxTexSize: p.getIntegerv(GL.MAX_TEXTURE_SIZE, 1)[0],
+      maxTexUnits: p.getIntegerv(GL.MAX_TEXTURE_IMAGE_UNITS, 1)[0],
+      workarounds: this.workarounds,
+    };
     if (!opts.probe) { this._applyViewport(); this._applyScissor(); }   // probe contexts share the GL context but must not touch window state
   }
   getContextAttributes() { return Object.assign({}, this._attrs, { depth: false, stencil: true, antialias: false }); }
@@ -212,16 +244,18 @@ class WebGLRenderingContext {
       case GL.TEXTURE_BINDING_2D: return this._reg.tex.get(pm.getIntegerv(p, 1)[0]) || null;
       case GL.CURRENT_PROGRAM: return this._reg.prog.get(pm.getIntegerv(p, 1)[0]) || null;
       case GL.RENDERBUFFER_BINDING: return this._reg.rb.get(pm.getIntegerv(p, 1)[0]) || null;
-      case 0x85B5: return this._reg.vao.get(pm.getIntegerv(p, 1)[0]) || null;   // VERTEX_ARRAY_BINDING(_OES)
-      default: this._stub('getParameter(0x' + p.toString(16) + ')'); return null;
+      case 0x85B5: return this._hasVao ? (this._reg.vao.get(pm.getIntegerv(p, 1)[0]) || null) : null;   // VERTEX_ARRAY_BINDING(_OES)
+      default: this._stub('getParameter(' + (typeof p === 'number' ? '0x' + p.toString(16) : String(p)) + ')'); return null;
     }
   }
 
   // ---- extensions ----
   getSupportedExtensions() {
-    const l = ['OES_element_index_uint', 'WEBGL_lose_context', 'WEBGL_debug_renderer_info'];
-    if (this._es3) l.push('OES_vertex_array_object', 'ANGLE_instanced_arrays');
-    if (this._glExt.includes(' OES_standard_derivatives ')) l.push('OES_standard_derivatives');
+    const l = ['WEBGL_lose_context', 'WEBGL_debug_renderer_info'];
+    if (this._hasUintIndex) l.push('OES_element_index_uint');
+    if (this._hasVao) l.push('OES_vertex_array_object');
+    if (this._hasInstancing) l.push('ANGLE_instanced_arrays');
+    if (this._es3 || this._glExt.includes(' OES_standard_derivatives ')) l.push('OES_standard_derivatives');
     if (this._glExt.includes(' EXT_texture_filter_anisotropic ')) l.push('EXT_texture_filter_anisotropic');
     return l;
   }
@@ -338,26 +372,50 @@ class WebGLRenderingContext {
   deleteFramebuffer(f) { if (f && !f._deleted) { f._deleted = true; this._pmz.deleteFramebuffer(f._id); } }
   isFramebuffer(f) { return !!f && !f._deleted; }
   framebufferTexture2D(t, a, tt, tex, l) { this._pmz.framebufferTexture2D(t, a, tt, id(tex), l); }
-  framebufferRenderbuffer(t, a, rt, rb) { this._pmz.framebufferRenderbuffer(t, a, rt, id(rb)); }
+  framebufferRenderbuffer(t, a, rt, rb) {
+    const rid = id(rb);
+    if (a === GL.DEPTH_STENCIL_ATTACHMENT && !this._es3) {
+      // GLES 2.0 does not accept GL_DEPTH_STENCIL_ATTACHMENT: attach DEPTH + STENCIL separately (or STENCIL only without OES_packed_depth_stencil).
+      if (this._packedDS) this._pmz.framebufferRenderbuffer(t, GL.DEPTH_ATTACHMENT, rt, rid);
+      this._pmz.framebufferRenderbuffer(t, GL.STENCIL_ATTACHMENT, rt, rid);
+      return;
+    }
+    this._pmz.framebufferRenderbuffer(t, a, rt, rid);
+  }
   checkFramebufferStatus(t) { return this._pmz.checkFramebufferStatus(t); }
-  getFramebufferAttachmentParameter(t, a, p) { return this._pmz.getFramebufferAttachmentParameter(t, a, p); }
+  getFramebufferAttachmentParameter(t, a, p) {
+    const att = (a === GL.DEPTH_STENCIL_ATTACHMENT && !this._es3) ? GL.STENCIL_ATTACHMENT : a;
+    return this._pmz.getFramebufferAttachmentParameter(t, att, p);
+  }
   createRenderbuffer() { const o = new WebGLRenderbuffer(this._pmz.createRenderbuffer()); this._reg.rb.set(o._id, o); return o; }
   deleteRenderbuffer(r) { if (r && !r._deleted) { r._deleted = true; this._reg.rb.delete(r._id); this._pmz.deleteRenderbuffer(r._id); } }
   isRenderbuffer(r) { return !!r && !r._deleted; }
   bindRenderbuffer(t, r) { this._pmz.bindRenderbuffer(t, id(r)); }
-  renderbufferStorage(t, f, w, h) { this._pmz.renderbufferStorage(t, f === GL.DEPTH_STENCIL ? 0x88F0 : f, w, h); }   // WebGL1 DEPTH_STENCIL = ES3 DEPTH24_STENCIL8
+  renderbufferStorage(t, f, w, h) {
+    const fmt = f === GL.DEPTH_STENCIL ? (this._packedDS ? 0x88F0 : GL.STENCIL_INDEX8) : f;   // DEPTH24_STENCIL8 when supported, else STENCIL_INDEX8
+    this._pmz.renderbufferStorage(t, fmt, w, h);
+  }
   getRenderbufferParameter(t, p) { return this._pmz.getRenderbufferParameter(t, p); }
 
   // ---- shaders / programs ----
   createShader(t) { return new WebGLShader(this._pmz.createShader(t), t); }
   deleteShader(s) { if (s && !s._deleted) { s._deleted = true; this._pmz.deleteShader(s._id); } }
   isShader(s) { return !!s && !s._deleted; }
-  shaderSource(s, src) { s._src = String(src); this._pmz.shaderSource(s._id, s._src); }
+  shaderSource(s, src) {
+    let text = String(src);
+    if (s._type === GL.FRAGMENT_SHADER && !this._fragHighp) {
+      text = text.replace(/\bprecision\s+highp\s+float\s*;/g, 'precision mediump float;');
+    }
+    s._src = text; this._pmz.shaderSource(s._id, text);
+  }
   getShaderSource(s) { return s._src; }
   compileShader(s) { this._pmz.compileShader(s._id); }
   getShaderParameter(s, p) { const v = this._pmz.getShaderParameter(s._id, p); return (p === GL.COMPILE_STATUS || p === GL.DELETE_STATUS) ? v !== 0 : v; }
   getShaderInfoLog(s) { return this._pmz.getShaderInfoLog(s._id); }
-  getShaderPrecisionFormat(st, pt) { return new WebGLShaderPrecisionFormat(this._pmz.getShaderPrecisionFormat(st, pt)); }
+  getShaderPrecisionFormat(st, pt) {
+    if (st === GL.FRAGMENT_SHADER && pt === GL.HIGH_FLOAT && !this._fragHighp) return new WebGLShaderPrecisionFormat([0, 0, 0]);
+    return new WebGLShaderPrecisionFormat(this._pmz.getShaderPrecisionFormat(st, pt));
+  }
   createProgram() { const o = new WebGLProgram(this._pmz.createProgram()); this._reg.prog.set(o._id, o); return o; }
   deleteProgram(p) { if (p && !p._deleted) { p._deleted = true; this._reg.prog.delete(p._id); this._pmz.deleteProgram(p._id); } }
   isProgram(p) { return !!p && !p._deleted; }

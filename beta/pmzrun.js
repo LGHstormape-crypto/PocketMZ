@@ -150,10 +150,15 @@ function initWindow() {
 let debugInstalled = false, glDebugStats = null;
 function createMainGL(canvas, attrs, probe) {
   if (GLDEBUG && !debugInstalled) { debugInstalled = true; glDebugStats = webgl.installDebug(pmz, m => { glMessages.push(m); log(m); }); }
-  const gl = new webgl.WebGLRenderingContext(canvas, attrs, { pmz, drawableWidth: glInfo.drawableWidth, drawableHeight: glInfo.drawableHeight, es3: glInfo.es3, onWarn: warnOnce, probe: !!probe });
+  const gl = new webgl.WebGLRenderingContext(canvas, attrs, {
+    pmz, drawableWidth: glInfo.drawableWidth, drawableHeight: glInfo.drawableHeight,
+    es3: glInfo.es3, hasVao: glInfo.hasVao, hasInstancing: glInfo.hasInstancing,
+    gpuWorkarounds: proc.env.PMZ_GPU_WORKAROUNDS || '',
+    onWarn: warnOnce, probe: !!probe,
+  });
   if (probe) return gl;
   mainGL = gl;
-  log('WebGL context created for ' + canvas.width + 'x' + canvas.height + ' canvas, window ' + glInfo.drawableWidth + 'x' + glInfo.drawableHeight + ', attrs ' + JSON.stringify(attrs));
+  log('WebGL context created for ' + canvas.width + 'x' + canvas.height + ' canvas, window ' + glInfo.drawableWidth + 'x' + glInfo.drawableHeight + ', attrs ' + JSON.stringify(attrs) + ', caps ' + JSON.stringify(gl.caps));
   return mainGL;
 }
 // one frame: SDL events, requestAnimationFrame callbacks (engine tick + PIXI render), swap (blocks until vblank)
@@ -858,7 +863,7 @@ async function battleStage() {
   const nf = frames.length - g0; const d = Object.entries(prof).map(([k, v]) => [k, v.n - (q0[k] ? q0[k].n : 0), v.ms - (q0[k] ? q0[k].ms : 0)]).filter(e => e[1]).sort((x, y) => y[2] - x[2]).slice(0, 16);
   if (d.length) log('BATTLE_NATIVE per frame (' + nf + ' frames): total ' + (d.reduce((t, e) => t + e[2], 0) / nf).toFixed(1) + 'ms; ' + d.map(e => e[0] + ' ' + (e[1] / nf).toFixed(1) + '/' + (e[2] / nf).toFixed(2) + 'ms').join(', '));
   if (cp) await cpuProfStop(cp);
-  timings.battleStats = frameStats(tM, nowMs()); log('BATTLE_STATS ' + JSON.stringify(timings.battleStats));
+  timings.battleStats = frameStats(tM, nowMs()); log('BATTLE_STATS ' + JSON.stringify(timings.battleStats) + (pmz.textCacheStats ? ' textCache=' + pmz.textCacheStats().join('/') : ''));
   await measure('battle', { scene: SceneManager._scene && SceneManager._scene.constructor.name });
 }
 

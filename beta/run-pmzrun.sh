@@ -54,7 +54,57 @@ if [ "$MODE" = play ] && [ "${POCKETMZ_HOTKEYS:-1}" = 1 ] && [ -f /storage/pocke
   POCKETMZ_TITLE="${POCKETMZ_TITLE:-$ID}" python3 /storage/pocketmz/pocketmz-hotkeys.py >/tmp/pmz-hotkeys.log 2>&1 &
   HK_PID=$!
 fi
-$TMO unshare -m sh -c 'mount --make-rprivate / && mkdir -p $POCKETMZ_ROOT/opt/beta/shots && mount --bind /storage/pocketmz/beta/shots $POCKETMZ_ROOT/opt/beta/shots && exec /storage/pocketmz/pocketmz-chroot.sh run /usr/bin/env SDL_VIDEODRIVER=wayland mesa_glthread=${mesa_glthread:-false} MODE=$MODE OUT=$OUTV SAVE_DIR=$SAVE_DIR SAVETEST=$SAVETEST INPUTTEST=$INPUTTEST PMZ_PLAYSELFTEST=$PMZ_PLAYSELFTEST PMZ_VOLUME=$PMZ_VOLUME PMZ_AUDIO=$PMZ_AUDIO PMZ_AUDIO_DUMP=$PMZ_AUDIO_DUMP PMZ_AUDIO_RATE=$PMZ_AUDIO_RATE PMZ_AUDIO_BUF=$PMZ_AUDIO_BUF AUDIOTEST=$AUDIOTEST SDL_AUDIODRIVER=$SDL_AUDIODRIVER PMZ_INPUTLOG=$PMZ_INPUTLOG PMZ_GPTK=/tmp/pmz-gptk PMZ_PATCHES=${PMZ_PATCHES-Handheld,HandheldMV,PluginFixes,Menu} GAME=$GAME PMZ_NOQUIT=$PMZ_NOQUIT PMZ_GUARD=$PMZ_GUARD PMZ_GUARD_FORCE=$PMZ_GUARD_FORCE PMZ_GUARD_BOOT_SEC=$PMZ_GUARD_BOOT_SEC PMZ_FAIL_FILE=$PMZ_FAIL_FILE PMZ_COMPAT_FILE=$PMZ_COMPAT_FILE PMZ_GLOBAL_REQUIRE=$PMZ_GLOBAL_REQUIRE PMZ_EFFECT_ADD=$PMZ_EFFECT_ADD PMZ_EFFEKSEER=$PMZ_EFFEKSEER PMZ_BATTLE=$PMZ_BATTLE PMZ_FREEZE=$PMZ_FREEZE PMZ_TEXTPROF=$PMZ_TEXTPROF PMZ_MTEST=$PMZ_MTEST PMZ_PROFLOG=$PMZ_PROFLOG PMZ_BATTLE_REAL=$PMZ_BATTLE_REAL PMZ_BATTLE_SEC=$PMZ_BATTLE_SEC PMZ_TROOP=$PMZ_TROOP PMZ_ANIM=$PMZ_ANIM PMZ_BATTLE_SHOT=$PMZ_BATTLE_SHOT POCKETMZ_UI_LANG=$POCKETMZ_UI_LANG POCKETMZ_RT_NOW=$POCKETMZ_RT_NOW POCKETMZ_RT_GLOBAL=$POCKETMZ_RT_GLOBAL POCKETMZ_BETA_INST=$POCKETMZ_BETA_INST POCKETMZ_RENDER_SCALE=$POCKETMZ_RENDER_SCALE POCKETMZ_IMG_SCALE=$POCKETMZ_IMG_SCALE POCKETMZ_IMG_CACHE=$POCKETMZ_IMG_CACHE POCKETMZ_WIN_SCALE=$POCKETMZ_WIN_SCALE POCKETMZ_GC=$POCKETMZ_GC POCKETMZ_SE_CACHE=$POCKETMZ_SE_CACHE POCKETMZ_MAP_CACHE=$POCKETMZ_MAP_CACHE POCKETMZ_KEEP_IMAGES=$POCKETMZ_KEEP_IMAGES POCKETMZ_PRELOAD_SYSTEM=$POCKETMZ_PRELOAD_SYSTEM POCKETMZ_TILE_ATLAS=$POCKETMZ_TILE_ATLAS POCKETMZ_PRELOAD_FIX=$POCKETMZ_PRELOAD_FIX PMZ_ORPHAN=$PMZ_ORPHAN POCKETMZ_DEFAULT_FPS=${POCKETMZ_DEFAULT_FPS:-60} TOUCH=$POCKETMZ_TOUCH PMZ_GLDEBUG=$POCKETMZ_GLDEBUG PMZ_HINT=$PMZ_HINT PMZ_HINTMETRICS=$PMZ_HINTMETRICS PMZ_AA=$PMZ_AA PMZ_PROF=$PMZ_PROF PMZ_CPUPROF=$PMZ_CPUPROF PMZ_CPUPROF2=$PMZ_CPUPROF2 PMZ_CPUPROF3=$PMZ_CPUPROF3 PMZ_NOBLUR=$PMZ_NOBLUR PMZ_TEXT_TOL=$PMZ_TEXT_TOL SHOT2=${SHOT2:-} SHOT4=${SHOT4:-/opt/beta/shots/map-beta-play.png} MAPADV=${MAPADV:-0} TELEPORT=$TELEPORT SHOT5=${SHOT5:-/opt/beta/shots/map-beta-walk.png} SHOT3=${SHOT3:-/opt/beta/shots/map-beta.png} MAPHOLD=${MAPHOLD:-10000} SHOT=${SHOT:-/opt/beta/shots/title-beta.png} HOLD=$POCKETMZ_HOLD MAXSEC=$POCKETMZ_MAXSEC /usr/bin/node --max-old-space-size=256 --expose-gc ${PMZ_NODEFLAGS:---maglev} /opt/beta/pmzrun.js'
+# Display backend (P4): explicit SDL_VIDEODRIVER wins; else detect Wayland socket -> X11 -> KMS/DRM.
+if [ -z "$SDL_VIDEODRIVER" ]; then
+  _xr="${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}"; _wd="${WAYLAND_DISPLAY:-wayland-1}"
+  if [ -S "$_xr/$_wd" ]; then SDL_VIDEODRIVER=wayland
+  elif [ -n "$DISPLAY" ]; then SDL_VIDEODRIVER=x11
+  elif [ -e /dev/dri/card0 ]; then SDL_VIDEODRIVER=kmsdrm
+  fi
+fi
+# Host GPU driver passthrough (P2): POCKETMZ_HOST_GL=auto|1|0 (default auto).
+# When the host uses a closed GLES driver (e.g. ROCKNIX libmali: /dev/mali0 or bind-mounted /usr/lib/libEGL.so*),
+# bind ONLY the host GL/vendor .so files into a private tmpfs at $POCKETMZ_ROOT/tmp/pmz-hostgl so chroot Mesa
+# and host libc are never mixed. On panfrost (open-source Mesa), HOST_GL stays 0.
+HOST_GL=0
+case "${POCKETMZ_HOST_GL:-auto}" in
+  1|on|true) HOST_GL=1 ;;
+  0|off|false) HOST_GL=0 ;;
+  auto)
+    if [ -e /dev/mali0 ] || grep -q ' /usr/lib/libEGL\.so' /proc/mounts 2>/dev/null; then HOST_GL=1
+    elif [ -e /usr/lib/libEGL.so.1 ] && [ ! -d /sys/module/panfrost ] && [ ! -d /sys/bus/platform/drivers/panfrost ] && [ ! -d /sys/module/lima ] && [ ! -d /sys/module/etnaviv ]; then HOST_GL=1
+    fi ;;
+esac
+export HOST_GL SDL_VIDEODRIVER
+[ "$HOST_GL" = 1 ] && echo "host GL passthrough enabled (video=${SDL_VIDEODRIVER:-auto})"
+$TMO unshare -m sh -c '
+  mount --make-rprivate / || exit 1
+  mkdir -p "$POCKETMZ_ROOT/opt/beta/shots" && mount --bind /storage/pocketmz/beta/shots "$POCKETMZ_ROOT/opt/beta/shots" || exit 1
+  HOSTGL_ENV=""
+  if [ "$HOST_GL" = 1 ]; then
+    /storage/pocketmz/pocketmz-chroot.sh mount || exit 1
+    HG="$POCKETMZ_ROOT/tmp/pmz-hostgl"
+    mkdir -p "$HG" && mount -t tmpfs -o size=2M tmpfs "$HG" || exit 1
+    for d in /usr/lib /usr/lib64 /lib; do
+      [ -d "$d" ] || continue
+      for pat in "libEGL.so*" "libGLESv2.so*" "libGLESv1_CM.so*" "libgbm.so*" "libmali*.so*" "libMali*.so*" "libPVR*.so*" "libIMG*.so*" "libsrv_um*.so*" "libusc*.so*"; do
+        for f in "$d"/$pat; do
+          [ -e "$f" ] || [ -L "$f" ] || continue
+          bn="${f##*/}"; [ -e "$HG/$bn" ] || [ -L "$HG/$bn" ] && continue
+          if [ -L "$f" ]; then
+            tgt="$(readlink "$f")"; case "$tgt" in /*) tgt="${tgt##*/}" ;; esac
+            ln -s "$tgt" "$HG/$bn"
+          elif [ -f "$f" ]; then
+            touch "$HG/$bn" && mount --bind "$f" "$HG/$bn" && mount -o remount,bind,ro "$HG/$bn" 2>/dev/null
+          fi
+        done
+      done
+    done
+    [ -e "$HG/libEGL.so.1" ] && [ -z "$SDL_VIDEO_EGL_DRIVER" ] && SDL_VIDEO_EGL_DRIVER=/tmp/pmz-hostgl/libEGL.so.1
+    [ -e "$HG/libGLESv2.so.2" ] && [ -z "$SDL_VIDEO_GL_DRIVER" ] && SDL_VIDEO_GL_DRIVER=/tmp/pmz-hostgl/libGLESv2.so.2
+    HOSTGL_ENV="LD_LIBRARY_PATH=/tmp/pmz-hostgl${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
+  exec /storage/pocketmz/pocketmz-chroot.sh run /usr/bin/env $HOSTGL_ENV ${SDL_VIDEODRIVER:+SDL_VIDEODRIVER=$SDL_VIDEODRIVER} ${SDL_VIDEO_EGL_DRIVER:+SDL_VIDEO_EGL_DRIVER=$SDL_VIDEO_EGL_DRIVER} ${SDL_VIDEO_GL_DRIVER:+SDL_VIDEO_GL_DRIVER=$SDL_VIDEO_GL_DRIVER} PMZ_GLES=$PMZ_GLES PMZ_GPU_WORKAROUNDS=$PMZ_GPU_WORKAROUNDS mesa_glthread=${mesa_glthread:-false} MODE=$MODE OUT=$OUTV SAVE_DIR=$SAVE_DIR SAVETEST=$SAVETEST INPUTTEST=$INPUTTEST PMZ_PLAYSELFTEST=$PMZ_PLAYSELFTEST PMZ_VOLUME=$PMZ_VOLUME PMZ_AUDIO=$PMZ_AUDIO PMZ_AUDIO_DUMP=$PMZ_AUDIO_DUMP PMZ_AUDIO_RATE=$PMZ_AUDIO_RATE PMZ_AUDIO_BUF=$PMZ_AUDIO_BUF AUDIOTEST=$AUDIOTEST SDL_AUDIODRIVER=$SDL_AUDIODRIVER PMZ_INPUTLOG=$PMZ_INPUTLOG PMZ_GPTK=/tmp/pmz-gptk PMZ_PATCHES=${PMZ_PATCHES-Handheld,HandheldMV,PluginFixes,Menu} GAME=$GAME PMZ_NOQUIT=$PMZ_NOQUIT PMZ_GUARD=$PMZ_GUARD PMZ_GUARD_FORCE=$PMZ_GUARD_FORCE PMZ_GUARD_BOOT_SEC=$PMZ_GUARD_BOOT_SEC PMZ_FAIL_FILE=$PMZ_FAIL_FILE PMZ_COMPAT_FILE=$PMZ_COMPAT_FILE PMZ_GLOBAL_REQUIRE=$PMZ_GLOBAL_REQUIRE PMZ_EFFECT_ADD=$PMZ_EFFECT_ADD PMZ_EFFEKSEER=$PMZ_EFFEKSEER PMZ_BATTLE=$PMZ_BATTLE PMZ_FREEZE=$PMZ_FREEZE PMZ_TEXTPROF=$PMZ_TEXTPROF PMZ_MTEST=$PMZ_MTEST PMZ_PROFLOG=$PMZ_PROFLOG PMZ_BATTLE_REAL=$PMZ_BATTLE_REAL PMZ_BATTLE_SEC=$PMZ_BATTLE_SEC PMZ_TROOP=$PMZ_TROOP PMZ_ANIM=$PMZ_ANIM PMZ_BATTLE_SHOT=$PMZ_BATTLE_SHOT POCKETMZ_UI_LANG=$POCKETMZ_UI_LANG POCKETMZ_RT_NOW=$POCKETMZ_RT_NOW POCKETMZ_RT_GLOBAL=$POCKETMZ_RT_GLOBAL POCKETMZ_BETA_INST=$POCKETMZ_BETA_INST POCKETMZ_RENDER_SCALE=$POCKETMZ_RENDER_SCALE POCKETMZ_IMG_SCALE=$POCKETMZ_IMG_SCALE POCKETMZ_IMG_CACHE=$POCKETMZ_IMG_CACHE POCKETMZ_WIN_SCALE=$POCKETMZ_WIN_SCALE POCKETMZ_GC=$POCKETMZ_GC POCKETMZ_SE_CACHE=$POCKETMZ_SE_CACHE POCKETMZ_MAP_CACHE=$POCKETMZ_MAP_CACHE POCKETMZ_KEEP_IMAGES=$POCKETMZ_KEEP_IMAGES POCKETMZ_PRELOAD_SYSTEM=$POCKETMZ_PRELOAD_SYSTEM POCKETMZ_TILE_ATLAS=$POCKETMZ_TILE_ATLAS POCKETMZ_PRELOAD_FIX=$POCKETMZ_PRELOAD_FIX PMZ_ORPHAN=$PMZ_ORPHAN POCKETMZ_DEFAULT_FPS=${POCKETMZ_DEFAULT_FPS:-60} TOUCH=$POCKETMZ_TOUCH PMZ_GLDEBUG=$POCKETMZ_GLDEBUG PMZ_HINT=$PMZ_HINT PMZ_HINTMETRICS=$PMZ_HINTMETRICS PMZ_AA=$PMZ_AA PMZ_PROF=$PMZ_PROF PMZ_CPUPROF=$PMZ_CPUPROF PMZ_CPUPROF2=$PMZ_CPUPROF2 PMZ_CPUPROF3=$PMZ_CPUPROF3 PMZ_NOBLUR=$PMZ_NOBLUR PMZ_TEXT_TOL=$PMZ_TEXT_TOL SHOT2=${SHOT2:-} SHOT4=${SHOT4:-/opt/beta/shots/map-beta-play.png} MAPADV=${MAPADV:-0} TELEPORT=$TELEPORT SHOT5=${SHOT5:-/opt/beta/shots/map-beta-walk.png} SHOT3=${SHOT3:-/opt/beta/shots/map-beta.png} MAPHOLD=${MAPHOLD:-10000} SHOT=${SHOT:-/opt/beta/shots/title-beta.png} HOLD=$POCKETMZ_HOLD MAXSEC=$POCKETMZ_MAXSEC /usr/bin/node --max-old-space-size=256 --expose-gc ${PMZ_NODEFLAGS:---maglev} /opt/beta/pmzrun.js'
 RC=$?
 [ -n "$HK_PID" ] && { kill $HK_PID 2>/dev/null; command -v set_kill >/dev/null && set_kill stop; }
 exit $RC

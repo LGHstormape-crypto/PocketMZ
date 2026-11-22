@@ -14,8 +14,8 @@ PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关
 
 ## 状态
 
-- 已在 GKD Mini Plus 上运行，需要 panfrost GPU 驱动。
-- 其他 RK3566 的 ROCKNIX 设备尚未测试。
+- 已在 GKD Mini Plus（ROCKNIX）上运行：默认运行时 α（NW.js）需要 **panfrost** GPU 驱动；实验性 β 运行时（无浏览器）现已支持在闭源 **libmali** 驱动及纯 OpenGL ES 2.0 环境下运行。
+- 其他 RK3566 / 闭源驱动的 Linux 掌机尚未逐台测试，但 β 运行时已去掉 `libGLESv2` 静态链接并支持宿主 GL 驱动直通与显示后端自动选择（Wayland / X11 / KMSDRM）。
 
 ## 功能
 
@@ -64,7 +64,7 @@ PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关
 
 详细说明见 [scripts/README.md](scripts/README.md)。
 
-**前提**：GPU 驱动必须是 **panfrost**。在 ES 中进入 系统设置 → GPU DRIVER → panfrost，然后重启。libmali 驱动下浏览器没有 WebGL。
+**前提**：默认运行时 α（NW.js）需要 **panfrost** GPU 驱动（ES → 系统设置 → GPU DRIVER → panfrost，重启；libmali 下浏览器没有 WebGL）。如果使用实验性 **β 运行时**，则同时支持 `panfrost` 与闭源 `libmali` 驱动（自动挂载宿主 GL 库）。
 
 ## 开发说明
 
@@ -92,7 +92,7 @@ PocketMZ is an unofficial project, not affiliated with KADOKAWA or Gotcha Gotcha
 - Not affiliated with or endorsed by KADOKAWA / Gotcha Gotcha Games (RPG Maker), GameKiddy (GKD handhelds), ROCKNIX or the NW.js project.
 - The patches are tuned for the GKD Mini Plus (RK3566, 1 GB RAM); behaviour on other devices is not guaranteed.
 
-**Status:** Works on the GKD Mini Plus with the panfrost GPU driver. Other RK3566 ROCKNIX devices are untested.
+**Status:** Works on the GKD Mini Plus (ROCKNIX). The default α runtime (NW.js) requires the **panfrost** GPU driver; the experimental browser-less **β runtime** also works on the closed-source **libmali** driver (runtime GL loading via `SDL_GL_GetProcAddress`, host GL driver passthrough, ES 2.0 fallback, and configurable SDL video backend). Other Linux handhelds are untested.
 
 **Features:**
 
@@ -108,7 +108,7 @@ PocketMZ is an unofficial project, not affiliated with KADOKAWA or Gotcha Gotcha
 
 **Layout:** `patches/` (runtime plugins), `scripts/` (launcher, chroot, installer, settings, hotkeys, dev tools), `scripts/wpe/` (experimental, unused), `beta/` (experimental browser-less runtime: `pmzrun.js`, `overlay.js`, native addon `pmzrt/`, packaging scripts), `tools/` (PC converter, benchmark generator, repo exporter), `BUILD.md`, `scripts/README.md` (user manual), `scripts/INTEGRATION.md` (system image integration).
 
-**Install:** A prebuilt runtime bundle will be published as a GitHub Release later. Until then, build it yourself (see `BUILD.md`). Extract the bundle and run `sh pocketmz-install.sh`. Requires the panfrost GPU driver (EmulationStation: System settings, GPU DRIVER, panfrost, then reboot).
+**Install:** A prebuilt runtime bundle will be published as a GitHub Release later. Until then, build it yourself (see `BUILD.md`). Extract the bundle and run `sh pocketmz-install.sh`. The default α runtime (NW.js) requires the `panfrost` GPU driver (EmulationStation: System settings, GPU DRIVER, panfrost, then reboot); the optional β runtime works on both `panfrost` and closed-source `libmali`.
 
 **Development:** Create the flag file `/storage/pocketmz/dev` to enable the `PocketMZ_Debug` REPL on `127.0.0.1:9333`. `scripts/pocketmz-autotest.sh` plays a game automatically and records memory and FPS timelines. `tools/pocketmz-benchgen.py` generates two synthetic benchmark games (MV and MZ, 1920x1080).
 

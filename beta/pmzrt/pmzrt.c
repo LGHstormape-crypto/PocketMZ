@@ -3,7 +3,7 @@
 #define NAPI_VERSION 8
 #include <node_api.h>
 #include <SDL.h>
-#include <GLES3/gl3.h>
+#include "pmzrt_gl.h"
 #include <png.h>
 #include <stdio.h>
 #include <setjmp.h>
@@ -59,8 +59,10 @@ static napi_value Init_(napi_env env, napi_callback_info info) {
   }
   SDL_SetHint("SDL_VIDEO_WAYLAND_WMCLASS", "pmzrt");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) return throw_sdl(env, "SDL_Init");
+  const char *gles_env = getenv("PMZ_GLES");
+  int force_es2 = gles_env && gles_env[0] == '2';
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);   // ES 3.0 context: VAOs/instancing are core, GLSL ES 1.00 shaders still compile
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, force_es2 ? 2 : 3);   // ES 3.0 when available; PMZ_GLES=2 forces ES 2.0
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
   SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8); SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
   SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8); SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
@@ -70,12 +72,21 @@ static napi_value Init_(napi_env env, napi_callback_info info) {
   g_win = SDL_CreateWindow(title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, w, h, flags);
   if (!g_win) { napi_value e = throw_sdl(env, "SDL_CreateWindow"); SDL_Quit(); return e; }
   g_ctx = SDL_GL_CreateContext(g_win);
-  g_es3 = g_ctx != NULL;
-  if (!g_ctx) {   // fall back to a plain ES 2.0 context
+  g_es3 = (!force_es2) && (g_ctx != NULL);
+  if (!g_ctx && !force_es2) {   // fall back to a plain ES 2.0 context
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     g_ctx = SDL_GL_CreateContext(g_win);
+    g_es3 = 0;
   }
   if (!g_ctx) { napi_value e = throw_sdl(env, "SDL_GL_CreateContext"); SDL_DestroyWindow(g_win); g_win = NULL; SDL_Quit(); return e; }
+  const char *missing = pmz_gl_load(g_es3);
+  if (missing) {
+    char buf[256]; snprintf(buf, sizeof buf, "pmz_gl_load: missing GLES symbol %s", missing);
+    SDL_GL_DeleteContext(g_ctx); g_ctx = NULL; SDL_DestroyWindow(g_win); g_win = NULL; SDL_Quit();
+    napi_throw_error(env, NULL, buf); return NULL;
+  }
+  const char *gl_ver = (const char *)glGetString(GL_VERSION);
+  if (g_es3 && (!gl_ver || !strstr(gl_ver, "OpenGL ES 3."))) { g_es3 = 0; pmz_gl_load(0); }
   SDL_GL_SetSwapInterval(vsync ? 1 : 0);
   int nj = SDL_NumJoysticks();
   for (int i = 0; i < nj; i++) if (SDL_IsGameController(i)) SDL_GameControllerOpen(i);
@@ -85,11 +96,13 @@ static napi_value Init_(napi_env env, napi_callback_info info) {
   set_str(env, r, "driver", SDL_GetCurrentVideoDriver());
   set_str(env, r, "glVendor", (const char *)glGetString(GL_VENDOR));
   set_str(env, r, "glRenderer", (const char *)glGetString(GL_RENDERER));
-  set_str(env, r, "glVersion", (const char *)glGetString(GL_VERSION));
+  set_str(env, r, "glVersion", gl_ver);
   int dw = 0, dh = 0; SDL_GL_GetDrawableSize(g_win, &dw, &dh);
   set_int(env, r, "drawableWidth", dw); set_int(env, r, "drawableHeight", dh);
   set_int(env, r, "joysticks", nj);
   set_int(env, r, "es3", g_es3);
+  set_int(env, r, "hasVao", g_has_vao);
+  set_int(env, r, "hasInstancing", g_has_instancing);
   return r;
 }
 
@@ -325,6 +338,7 @@ DEF(bufferData, 3, void *p; size_t len; if (argbytes(env, a_[1], &p, &len)) glBu
 // with NULL, same size and usage) so the driver gives it fresh storage instead of waiting for the GPU to finish the draws that
 // still read the old contents (on panfrost that wait was ~1 ms per call). PMZ_ORPHAN=0 turns this off.
 static int g_orphan = -1;
+DEF(setOrphan, 1, g_orphan = B(0) ? 1 : 0)
 DEF(bufferSubData, 3, void *p; size_t len; if (argbytes(env, a_[2], &p, &len)) {
   if (g_orphan < 0) { const char *o = getenv("PMZ_ORPHAN"); g_orphan = !(o && o[0] == '0'); }
   GLenum t = E(0); GLintptr off = (GLintptr)D(1);
@@ -488,13 +502,13 @@ DEFR(getVertexAttrib, 2, GLint v = 0; glGetVertexAttribiv(U(0), E(1), &v); retur
 DEFR(getVertexAttribOffset, 2, void *p = NULL; glGetVertexAttribPointerv(U(0), E(1), &p); return ret_d(env, (double)(uintptr_t)p);)
 DEF(drawArrays, 3, glDrawArrays(E(0), I(1), I(2)))
 DEF(drawElements, 4, glDrawElements(E(0), I(1), E(2), PTR(3)))
-DEF(drawArraysInstanced, 4, glDrawArraysInstanced(E(0), I(1), I(2), I(3)))
-DEF(drawElementsInstanced, 5, glDrawElementsInstanced(E(0), I(1), E(2), PTR(3), I(4)))
-DEF(vertexAttribDivisor, 2, glVertexAttribDivisor(U(0), U(1)))
-DEFR(createVertexArray, 0, GLuint i = 0; glGenVertexArrays(1, &i); return ret_d(env, i);)
-DEF(deleteVertexArray, 1, GLuint i = U(0); glDeleteVertexArrays(1, &i))
-DEF(bindVertexArray, 1, glBindVertexArray(U(0)))
-DEFR(isVertexArray, 1, return ret_b(env, glIsVertexArray(U(0)));)
+DEF(drawArraysInstanced, 4, if (glDrawArraysInstanced) glDrawArraysInstanced(E(0), I(1), I(2), I(3)); else g_softErr = GL_INVALID_OPERATION)
+DEF(drawElementsInstanced, 5, if (glDrawElementsInstanced) glDrawElementsInstanced(E(0), I(1), E(2), PTR(3), I(4)); else g_softErr = GL_INVALID_OPERATION)
+DEF(vertexAttribDivisor, 2, if (glVertexAttribDivisor) glVertexAttribDivisor(U(0), U(1)); else g_softErr = GL_INVALID_OPERATION)
+DEFR(createVertexArray, 0, GLuint i = 0; if (glGenVertexArrays) glGenVertexArrays(1, &i); else g_softErr = GL_INVALID_OPERATION; return ret_d(env, i);)
+DEF(deleteVertexArray, 1, GLuint i = U(0); if (glDeleteVertexArrays) glDeleteVertexArrays(1, &i))
+DEF(bindVertexArray, 1, if (glBindVertexArray) glBindVertexArray(U(0)); else g_softErr = GL_INVALID_OPERATION)
+DEFR(isVertexArray, 1, return ret_b(env, glIsVertexArray ? glIsVertexArray(U(0)) : 0);)
 
 // ---- queries ----
 DEFR(getString, 1, return ret_str(env, (const char *)glGetString(E(0)));)

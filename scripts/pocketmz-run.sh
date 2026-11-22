@@ -82,10 +82,7 @@ echo "start $(date) uptime=$(cut -d' ' -f1 /proc/uptime) src=$SRC"
 
 msg() { command -v mako-notify >/dev/null && mako-notify "$1"; echo "$1"; }
 
-if [ "$(get_setting gpu.driver)" != "panfrost" ]; then
-  msg "RPG Maker MZ 需要 GPU 驱动 panfrost（ES：系统设置 → GPU DRIVER）"
-  sleep 5; exit 1
-fi
+GPU_DRV=$(get_setting gpu.driver 2>/dev/null)
 
 ts() { echo "[$(cut -d' ' -f1 /proc/uptime)] $*"; }
 
@@ -244,9 +241,17 @@ if [ "$RT" != nw ]; then
   fi
   echo "β failed: $BWHY - marking the game and starting it on NW.js"
   bs_write false "$BWHY"
+  if [ -n "$GPU_DRV" ] && [ "$GPU_DRV" != "panfrost" ]; then
+    msg "β 运行时不兼容这个游戏，且 NW.js 需要 panfrost 驱动"
+    sleep 5; exit 1
+  fi
   msg "β 运行时不兼容这个游戏，改用 NW.js 重新启动"
 fi
 # ---- NW.js path (α, unchanged) ----
+if [ -n "$GPU_DRV" ] && [ "$GPU_DRV" != "panfrost" ]; then
+  msg "NW.js 需要 GPU 驱动 panfrost（可在设置中切换 β 运行时，或 ES 切回 panfrost）"
+  sleep 5; exit 1
+fi
 export POCKETMZ_RT_NOW=nw   # (only read by the in-game menu)
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}"

@@ -593,12 +593,31 @@
             b.filters && b.filters.length === 1 && b.filters[0] === b._colorFilter && b._colorFilter.enabled &&
             !b._mask && b.scale.x > 0 && b.scale.y > 0 && b.rotation === 0 && b.skew.x === 0 && b.skew.y === 0 &&
             b.pivot.x === 0 && b.pivot.y === 0 && b.anchor.x === 0 && b.anchor.y === 0;
-        const backKey = (b, r) => {
+        const backMatches = (c, b, r) => {
             const t = b.children[0], f = b._frame, tf = t._frame, u = b._colorFilter.uniforms, bt = b._bitmap._baseTexture;
-            return [r, f.x, f.y, f.width, f.height, b.scale.x, b.scale.y, b.alpha, b.blendMode, bt ? bt.dirtyId : 0,
-                u.hue, String(u.colorTone), String(u.blendColor), u.brightness,
-                tf.x, tf.y, tf.width, tf.height, t.x, t.y, t._width, t._height, t.scale.x, t.scale.y, t.origin.x, t.origin.y,
-                t.alpha, t.visible, t._bitmap === b._bitmap].join(",");
+            const ct = u.colorTone, bc = u.blendColor;
+            return c.r === r && c.fx === f.x && c.fy === f.y && c.fw === f.width && c.fh === f.height &&
+                c.bsx === b.scale.x && c.bsy === b.scale.y && c.ba === b.alpha && c.bm === b.blendMode &&
+                c.did === (bt ? bt.dirtyId : 0) && c.hue === u.hue && c.br === u.brightness &&
+                c.ct0 === ct[0] && c.ct1 === ct[1] && c.ct2 === ct[2] && c.ct3 === ct[3] &&
+                c.bc0 === bc[0] && c.bc1 === bc[1] && c.bc2 === bc[2] && c.bc3 === bc[3] &&
+                c.tfx === tf.x && c.tfy === tf.y && c.tfw === tf.width && c.tfh === tf.height &&
+                c.tx === t.x && c.ty === t.y && c.tw === t._width && c.th === t._height &&
+                c.tsx === t.scale.x && c.tsy === t.scale.y && c.tox === t.origin.x && c.toy === t.origin.y &&
+                c.ta === t.alpha && c.tv === t.visible && c.same === (t._bitmap === b._bitmap);
+        };
+        const backSave = (c, b, r) => {
+            const t = b.children[0], f = b._frame, tf = t._frame, u = b._colorFilter.uniforms, bt = b._bitmap._baseTexture;
+            const ct = u.colorTone, bc = u.blendColor;
+            c.r = r; c.fx = f.x; c.fy = f.y; c.fw = f.width; c.fh = f.height;
+            c.bsx = b.scale.x; c.bsy = b.scale.y; c.ba = b.alpha; c.bm = b.blendMode;
+            c.did = bt ? bt.dirtyId : 0; c.hue = u.hue; c.br = u.brightness;
+            c.ct0 = ct[0]; c.ct1 = ct[1]; c.ct2 = ct[2]; c.ct3 = ct[3];
+            c.bc0 = bc[0]; c.bc1 = bc[1]; c.bc2 = bc[2]; c.bc3 = bc[3];
+            c.tfx = tf.x; c.tfy = tf.y; c.tfw = tf.width; c.tfh = tf.height;
+            c.tx = t.x; c.ty = t.y; c.tw = t._width; c.th = t._height;
+            c.tsx = t.scale.x; c.tsy = t.scale.y; c.tox = t.origin.x; c.toy = t.origin.y;
+            c.ta = t.alpha; c.tv = t.visible; c.same = t._bitmap === b._bitmap;
         };
         const releaseBack = b => {
             const c = b._gkdBack;
@@ -607,10 +626,9 @@
         const buildBack = (win, b) => {
             const R = Graphics.app && Graphics.app.renderer;
             if (!R || window.PMZ_BACKCACHE_OFF || !backEligible(b)) { releaseBack(b); return; }
-            const key = backKey(b, R.resolution);
             const c = b._gkdBack;
-            if (c && c.key === key && c.bitmap === b._bitmap) return;
             if (!win.visible || win.openness <= 0) return;          // build when it is shown
+            if (c && c.bitmap === b._bitmap && backMatches(c, b, R.resolution)) return;
             const fc = Graphics.frameCount;
             b._gkdBuilds = (b._gkdBuilds || []).filter(n => fc - n < 60);
             if (b._gkdBuilds.length >= 3) { releaseBack(b); b._gkdNoCache = true; return; }   // keeps changing
@@ -627,14 +645,17 @@
             b._gkdBuilding = true;
             try { R.render(b, rt, true); } finally { b.position.set(x, y); b._gkdBuilding = false; }
             const sprite = (c && c.rt === rt) ? c.sprite : new PIXI.Sprite(rt);
-            b._gkdBack = { key, bitmap: b._bitmap, rt, sprite };
+            const nc = c && c.rt === rt ? c : { bitmap: b._bitmap, rt, sprite };
+            nc.bitmap = b._bitmap;
+            backSave(nc, b, R.resolution);
+            b._gkdBack = nc;
         };
         const containerRender = PIXI.Container.prototype.render;
         const backRender = function(renderer) {
             if (!this.visible || this.worldAlpha <= 0 || !this.renderable) return;
             const c = this._gkdBack;
             if (!c || this._gkdBuilding || window.PMZ_BACKCACHE_OFF || this._gkdNoCache || c.bitmap !== this._bitmap ||
-                !backEligible(this) || c.key !== backKey(this, renderer.resolution)) {
+                !backEligible(this) || !backMatches(c, this, renderer.resolution)) {
                 return containerRender.call(this, renderer);
             }
             // cached picture is in the parent's units, placed at the background's position;
@@ -661,8 +682,20 @@
         const _windowUpdate = Window.prototype.update;
         Window.prototype.update = function() {
             _windowUpdate.apply(this, arguments);
+            if (!this.visible || this.openness <= 0) return;
             const b = this._backSprite;
             if (b && b.render === backRender && !b._gkdNoCache) buildBack(this, b);
+        };
+    }
+
+    // 15b. Window_Scrollable.processWheelScroll calls isTouchedInsideFrame() (allocating Point +
+    //      Rectangle + worldTransform.applyInverse) for every scrollable window on every logic frame
+    //      even when TouchInput.wheelY is 0. Short-circuit when |wheelY| < 20 (identical threshold).
+    if (window.Window_Scrollable && Window_Scrollable.prototype.processWheelScroll) {
+        const _pws = Window_Scrollable.prototype.processWheelScroll;
+        Window_Scrollable.prototype.processWheelScroll = function() {
+            if (Math.abs(TouchInput.wheelY) < 20) return;
+            return _pws.call(this);
         };
     }
 
@@ -1540,7 +1573,7 @@
             // highp: with PIXI's default mediump (fp16 on Mali) "coord / 1792.0" is off by up to ~1 texel
             // (thin dark lines at tile edges); stock got away with it because /2048 is exact
             const fragmentSrc =
-                "precision highp float;" +
+                "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
                 "varying vec4 vFrame;" +
                 "varying vec2 vTextureCoord;" +
                 "varying float vTextureId;" +
