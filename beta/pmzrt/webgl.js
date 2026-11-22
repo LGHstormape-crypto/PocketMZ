@@ -320,6 +320,10 @@ class WebGLRenderingContext {
       if (s._cv) return { width: w, height: h, cv: s._cv, data: null };     // canvas with a Cairo surface: uploaded in C
       return { width: w, height: h, data: new Uint8Array(w * h * 4) };       // blank canvas: transparent black
     }
+    if (s.tagName === 'VIDEO') {
+      if (s._vidId > 0 && s.readyState >= 2) return { width: s.videoWidth | 0, height: s.videoHeight | 0, vid: s._vidId, data: null };
+      return { width: 1, height: 1, data: new Uint8Array(4) };
+    }
     if (s.tagName === 'IMG') return { width: s.naturalWidth | 0, height: s.naturalHeight | 0, data: null };   // not decoded (yet)
     this._stub('texImage2D source ' + (s.tagName || typeof s)); return { width: 1, height: 1, data: new Uint8Array(4) };
   }
@@ -342,6 +346,7 @@ class WebGLRenderingContext {
     // (target, level, internalformat, format, type, source)
     let px = this._srcPixels(c);
     if (b !== GL.UNSIGNED_BYTE) this._stub('texImage2D(source) type 0x' + b.toString(16));
+    if (px.vid && p.vidUploadTex) { p.vidUploadTex(px.vid, target, level, ifmt, a, b, this._flipY, this._premul, false, 0, 0); return; }
     if (px.cv) {
       if (a === GL.RGBA && px.width > 0 && px.height > 0) { p.texImageCv(target, level, ifmt, a, b, px.cv, this._flipY, this._premul, false, 0, 0); return; }
       px = { width: px.width, height: px.height, data: px.width > 0 && px.height > 0 ? p.cvReadRGBA(px.cv) : null };
@@ -356,6 +361,7 @@ class WebGLRenderingContext {
     if (arguments.length >= 9) { p.texSubImage2D(target, level, xo, yo, a, b, c, d, e, this._flipY, this._premul); return; }
     // (target, level, xoffset, yoffset, format, type, source)
     let px = this._srcPixels(c);
+    if (px.vid && p.vidUploadTex) { p.vidUploadTex(px.vid, target, level, 0, a, b, this._flipY, this._premul, true, xo, yo); return; }
     if (px.cv) {
       if (a === GL.RGBA && px.width > 0 && px.height > 0) { p.texImageCv(target, level, 0, a, b, px.cv, this._flipY, this._premul, true, xo, yo); return; }
       px = { width: px.width, height: px.height, data: px.width > 0 && px.height > 0 ? p.cvReadRGBA(px.cv) : null };

@@ -78,7 +78,7 @@
 ## 维护
 
 - 打包整套运行环境（重刷系统后恢复用）：`/storage/pocketmz/pocketmz-bundle.sh` → `/storage/pocketmz-bundle-<日期>.tar`（约 350 MB）。
-- 可选的 β 运行时（实验性，默认仍用 NW.js）：`pocketmz-bundle.sh --beta` 把约 40 MB 的 `beta-runtime.sqfs` 和 `beta/*.sh` 一起打进安装包；在游戏内 F2 菜单的「运行时」或「游戏默认设置」里选 `β` 或「自动」才会用。
+- 可选的 β 运行时（实验性，默认仍用 NW.js）：`pocketmz-bundle.sh --beta` 把约 77 MB 的 `beta-runtime.sqfs` 和 `beta/*.sh` 一起打进安装包；在游戏内 F2 菜单的「运行时」或「游戏默认设置」里选 `β` 或「自动」才会用。
 - 安装 / 更新：`mkdir /storage/pocketmz-new && tar -xf pocketmz-bundle-<日期>.tar -C /storage/pocketmz-new && sh /storage/pocketmz-new/pocketmz-install.sh`。已有的存档保留。
   在原版 ROCKNIX 上加 `--es`（`sh .../pocketmz-install.sh --es`），会同时在 ES 里加「RPGMZ」系统和 Tools 里的扫描项；系统镜像已集成时不用加。
 - 卸载：`/storage/pocketmz/pocketmz-uninstall.sh` 先显示会做什么，加 `--yes` 才执行。所有存档会先复制到 `/storage/pocketmz-saves-<日期>/`。
@@ -86,6 +86,6 @@
 
 ## 已知限制
 
-- 使用 NW.js 运行时启动到标题约 27～33 秒（大部分是浏览器本身的启动）；实验性 β 运行时启动约 2～10 秒，内存峰值低约 150～280 MB，但部分使用视频（`<video>`）或特殊浏览器 DOM 特性的游戏会自动退回 NW.js，战斗帧率在复杂场景下可能略低于 NW.js。
+- 使用 NW.js 运行时启动到标题约 27～33 秒（大部分是浏览器本身的启动）；实验性 β 运行时启动约 2～10 秒，内存峰值低约 150～280 MB，已原生支持 `.m4a/.mp3/.wav` 音频与 `<video>` 视频播放；仅少数使用动图 `.gif` 或特殊浏览器 DOM/表单特性的游戏会在「自动」模式下自动退回 NW.js。
 - MV 与 MZ 游戏均已有实机测试与运行时优化（渲染缩放、大图缩小缓存、窗口按显示比例绘制、BGM 流式播放、内存泄漏修复、F2 菜单与 β 运行时支持），但部分重负载插件游戏在战斗时仍可能只有 20 帧左右。
 - 内存不足时只有游戏会被关掉（会弹出提示），不会拖死整机。

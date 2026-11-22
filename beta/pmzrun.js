@@ -165,6 +165,7 @@ function createMainGL(canvas, attrs, probe) {
 function frameLoop() {
   const tStart = nowMs();
   if (wa) wa.pump();   // onended of finished audio sources
+  pumpVideos();        // step active <video> elements (loadeddata / timeupdate / ended)
   for (const e of pmz.pollEvents()) {
     if (e.type === 'quit') { log('quit event'); if (PLAY) { requestQuit('window close'); continue; } return finish(5); }
     if (PLAY) { if (INPUTLOG && e.type !== 'axis') log('sdl ' + JSON.stringify(e)); handleInput(e); continue; }
@@ -172,9 +173,11 @@ function frameLoop() {
     // does. The run ends by itself (MAXSEC / timeout in run-pmzrun.sh).
     if (e.type === 'keydown' || e.type === 'buttondown' || e.type === 'controlleradded' || e.type === 'controllerremoved') log('input ignored ' + JSON.stringify(e));
   }
-  if (rafPending.size) {
+  const fsVid = visibleFullscreenVideo();
+  if (rafPending.size || fsVid) {
     const cbs = [...rafPending.values()]; rafPending.clear(); const ts = performance.now();
     for (const f of cbs) { try { f(ts); } catch (e) { otherErrors.push('raf: ' + e.stack); log('RAF ERROR', e && e.stack); } }
+    if (fsVid && pmz.vidDrawFullscreen) pmz.vidDrawFullscreen(fsVid._vidId, glInfo.drawableWidth, glInfo.drawableHeight);
     try { overlayFrame(); } catch (e) { if (!overlayFrame.failed) { overlayFrame.failed = 1; otherErrors.push('overlay: ' + e.stack); log('OVERLAY ERROR', e && e.stack); } }
     const tJs = nowMs();
     if (shotPending) takeShot();
@@ -260,12 +263,126 @@ function compat(kind, detail) {
   if (GUARD) guardFail('COMPAT ' + k);   // a skipped cutscene / missing BGM is worse than a restart on NW.js
   const f = proc.env.PMZ_COMPAT_FILE; if (f) { try { fs.appendFileSync(f, k + '\n'); } catch (e) {} }
 }
-const MEDIA_UNSUPPORTED = /\.(m4a|rpgmvm|mp4|webm|ogv|mov|aac|mp3)(\?|#|$)/i;
+const MEDIA_UNSUPPORTED = /\.(gif)(\?|#|$)/i;   // audio (.ogg/.m4a/.rpgmvm/.mp3/.aac/.wav) and <video> (.mp4/.webm/.ogv/.mov) are natively decoded via FFmpeg in pmzrt
+const activeVideos = new Set();
+function visibleFullscreenVideo() {
+  for (const v of activeVideos) {
+    if (v._vidId <= 0 || v.readyState < 2 || v.ended || !v.parentNode) continue;
+    const st = v.style;
+    if (st.display === 'none' || st.visibility === 'hidden') continue;
+    const op = st.opacity;
+    if (op !== undefined && op !== '' && !(Number(op) > 0)) continue;
+    return v;
+  }
+  return null;
+}
+function pumpVideos() {
+  if (!activeVideos.size || !pmz.vidState) return;
+  for (const v of [...activeVideos]) {
+    if (v._vidId <= 0) continue;
+    const st = pmz.vidState(v._vidId);
+    if (!st) continue;
+    v._curTime = st.time;
+    if (st.ready && !v._loadedFired) {
+      v._loadedFired = true; v.readyState = 4;
+      v.videoWidth = st.outWidth || st.width; v.videoHeight = st.outHeight || st.height;
+      fire(v, 'loadedmetadata'); fire(v, 'loadeddata'); fire(v, 'canplay'); fire(v, 'canplaythrough');
+    }
+    if (st.ended && !v._endedFired) {
+      v._endedFired = true; v.paused = true; v.ended = true;
+      fire(v, 'ended');
+    }
+  }
+}
 class FakeMedia extends FakeElement {
-  constructor(tag) { super(tag); this.volume = 1; this.currentTime = 0; this.paused = true; this.muted = false; this.readyState = 4; this.videoWidth = 0; this.videoHeight = 0; this.src = ''; }
-  // <video>: not implemented. load() reports the use and behaves like a video that loaded and ended at once (MV Graphics.playVideo / MZ Video.play wait for these events)
-  load() { if (this.tagName === 'VIDEO') { compat('video', String(this.src).slice(0, 80)); setImmediate(() => { fire(this, 'loadeddata'); setImmediate(() => fire(this, 'ended')); }); } }
-  play() { return Promise.resolve(); } pause() {} canPlayType(t) { return /ogg|vorbis/i.test(t || '') ? 'probably' : ''; }   // MV WebAudio._detectCodecs: ogg yes, m4a no
+  constructor(tag) {
+    super(tag);
+    this._vol = 1; this._muted = false; this._loop = false; this._curTime = 0;
+    this.duration = 0; this.paused = true; this.ended = false; this.readyState = 0;
+    this.videoWidth = 0; this.videoHeight = 0; this._src = ''; this._vidId = 0;
+    this._loadedFired = false; this._endedFired = false; this.autoplay = false;
+  }
+  get src() { return this._src; }
+  set src(u) {
+    const s = String(u || '');
+    if (s !== this._src) { this._closeVid(); this.readyState = 0; this._loadedFired = false; this._endedFired = false; }
+    this._src = s;
+    if (this.tagName === 'VIDEO' && this._src && this.autoplay) this.load();
+  }
+  get volume() { return this._vol; }
+  set volume(v) { this._vol = Math.max(0, Math.min(1, Number(v) || 0)); if (this._vidId > 0 && pmz.vidSetVolume) pmz.vidSetVolume(this._vidId, this._vol); }
+  get muted() { return this._muted; }
+  set muted(m) { this._muted = !!m; if (this._vidId > 0 && pmz.vidSetMuted) pmz.vidSetMuted(this._vidId, this._muted); }
+  get loop() { return this._loop; }
+  set loop(l) { this._loop = !!l; if (this._vidId > 0 && pmz.vidSetLoop) pmz.vidSetLoop(this._vidId, this._loop); }
+  get currentTime() { return this._curTime; }
+  set currentTime(t) {
+    const s = Math.max(0, Number(t) || 0); this._curTime = s; this.ended = false; this._endedFired = false;
+    if (this._vidId > 0 && pmz.vidSeek) pmz.vidSeek(this._vidId, s);
+  }
+  _closeVid() {
+    if (this._vidId > 0) { if (pmz.vidClose) pmz.vidClose(this._vidId); this._vidId = 0; }
+    activeVideos.delete(this);
+  }
+  load() {
+    if (this.tagName !== 'VIDEO') return;
+    this._closeVid();
+    this.readyState = 0; this.paused = true; this.ended = false; this._loadedFired = false; this._endedFired = false; this._curTime = 0;
+    const raw = this._src;
+    if (!raw || !pmz.vidOpen) return;
+    let srcArg = null;
+    if (raw.startsWith('blob:')) {
+      const b = blobs.get(raw);
+      if (b && b._data) srcArg = b._data;
+    } else {
+      let p = resolvePath(raw);
+      if (!fs.existsSync(p)) {
+        const alt = p.replace(/\.webm$/i, '.mp4');
+        const alt2 = p.replace(/\.mp4$/i, '.webm');
+        if (alt !== p && fs.existsSync(alt)) p = alt;
+        else if (alt2 !== p && fs.existsSync(alt2)) p = alt2;
+      }
+      if (fs.existsSync(p)) srcArg = p;
+    }
+    if (!srcArg) {
+      log('VIDEO missing:', raw);
+      setImmediate(() => fire(this, 'error'));
+      return;
+    }
+    const maxW = (glInfo && glInfo.drawableWidth) || 640, maxH = (glInfo && glInfo.drawableHeight) || 480;
+    const r = pmz.vidOpen(srcArg, maxW, maxH);
+    if (!r || r.error || !r.id) {
+      log('VIDEO open failed:', raw, r && r.error);
+      setImmediate(() => fire(this, 'error'));
+      return;
+    }
+    this._vidId = r.id;
+    this.videoWidth = r.outWidth || r.width || 0;
+    this.videoHeight = r.outHeight || r.height || 0;
+    this.duration = r.duration || 0;
+    pmz.vidSetVolume(this._vidId, this._vol);
+    pmz.vidSetMuted(this._vidId, this._muted);
+    pmz.vidSetLoop(this._vidId, this._loop);
+    activeVideos.add(this);
+    log('VIDEO open', raw, r.width + 'x' + r.height + ' -> ' + this.videoWidth + 'x' + this.videoHeight, 'dur=' + this.duration.toFixed(1) + 's', 'audio=' + r.hasAudio);
+  }
+  play() {
+    if (this.tagName === 'VIDEO') {
+      if (this._vidId <= 0 && this._src) this.load();
+      if (this._vidId > 0 && pmz.vidPlay) {
+        this.paused = false; this.ended = false; this._endedFired = false;
+        pmz.vidPlay(this._vidId);
+      }
+    }
+    return Promise.resolve();
+  }
+  pause() {
+    this.paused = true;
+    if (this._vidId > 0 && pmz.vidPause) pmz.vidPause(this._vidId);
+  }
+  canPlayType(t) {
+    return /ogg|vorbis|mp4|aac|m4a|mpeg|mp3|wav|webm|vp8|vp9|h264|avc1/i.test(t || '') ? 'probably' : '';
+  }
 }
 class FakeBlob {
   constructor(parts, opts) {
@@ -336,6 +453,20 @@ class FakeImage extends FakeElement {
   }
   decode() { return Promise.resolve(); }
 }
+function readFileWithAudioFallback(p, cb) {
+  fs.readFile(p, (e, d) => {
+    if (!e || e.code !== 'ENOENT') return cb(e, d);
+    let alts = null;
+    if (/\.ogg$/i.test(p)) alts = [p.slice(0, -4) + '.m4a', p.slice(0, -4) + '.mp3', p.slice(0, -4) + '.wav'];
+    else if (/\.rpgmvo$/i.test(p)) alts = [p.slice(0, -7) + '.rpgmvm'];
+    else if (/\.m4a$/i.test(p)) alts = [p.slice(0, -4) + '.ogg'];
+    else if (/\.rpgmvm$/i.test(p)) alts = [p.slice(0, -7) + '.rpgmvo'];
+    if (alts) {
+      for (const a of alts) { if (fs.existsSync(a)) return fs.readFile(a, cb); }
+    }
+    cb(e, d);
+  });
+}
 class FakeXHR {
   constructor() { this.readyState = 0; this.status = 0; this.responseType = ''; this.response = null; this.responseText = ''; this._h = {}; }
   open(m, url) { this._url = url; this.readyState = 1; }
@@ -343,7 +474,7 @@ class FakeXHR {
   addEventListener(t, f) { addL(this, t, f); }
   send() {
     if (MEDIA_UNSUPPORTED.test(String(this._url))) compat('media-file', String(this._url).slice(0, 80));
-    fs.readFile(resolvePath(this._url), (e, d) => {
+    readFileWithAudioFallback(resolvePath(this._url), (e, d) => {
       if (e) { if (/(^|\/)(audio|movies)\//.test(String(this._url))) warnOnce('missing ' + (/(^|\/)movies\//.test(String(this._url)) ? 'movie' : 'audio') + ' file: ' + decodeURI(String(this._url)).slice(-70)); this.status = 404; this.readyState = 4; fire(this, 'readystatechange'); fire(this, 'error'); return; }
       this.status = 200; this.readyState = 4;
       if (this.responseType === 'arraybuffer') this.response = d.buffer.slice(d.byteOffset, d.byteOffset + d.length);
@@ -358,7 +489,7 @@ class FakeXHR {
 }
 function fakeFetch(url) {
   if (MEDIA_UNSUPPORTED.test(String(url))) compat('media-file', String(url).slice(0, 80));
-  return new Promise((res, rej) => fs.readFile(resolvePath(url), (e, d) => {
+  return new Promise((res, rej) => readFileWithAudioFallback(resolvePath(url), (e, d) => {
     if (e) return res({ ok: false, status: 404, statusText: 'Not Found', arrayBuffer: () => Promise.reject(e), text: () => Promise.reject(e), json: () => Promise.reject(e) });
     const ab = () => d.buffer.slice(d.byteOffset, d.byteOffset + d.length);
     res({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: () => Promise.resolve(ab()), text: () => Promise.resolve(d.toString('utf8')), json: () => Promise.resolve(JSON.parse(d.toString('utf8'))), clone() { return this; } });

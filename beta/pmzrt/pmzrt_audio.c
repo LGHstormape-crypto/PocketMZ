@@ -5,7 +5,13 @@
 //   decode: Ogg Vorbis via libvorbisfile in a libuv worker thread (decodeAudioData promise), kept at the file's own sample rate
 // JS->C commands and the audio callback share one mutex; the callback holds it for one block (~0.3 ms).
 #include <vorbis/vorbisfile.h>
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswresample/swresample.h>
+#include <libavutil/channel_layout.h>
 #include <time.h>
+
+static void vid_mix_audio(float *aL, float *aR, int n, int rate);
 
 #define AU_MAXB 2048        // frames per mixing chunk (the SDL buffer is cut into chunks of this size)
 #define AU_DEPTH 12         // graph depth limit
@@ -197,6 +203,7 @@ static void au_mix_block(float *out, int n) {   // n <= AU_MAXB; out interleaved
   int64_t F0 = au_frames; double t0 = (double)F0 / au_rate;
   memset(au_accL, 0, n * sizeof(float)); memset(au_accR, 0, n * sizeof(float));
   render_into(0, au_accL, au_accR, n, F0, t0, 0);
+  vid_mix_audio(au_accL, au_accR, n, au_rate);
   for (int i = 0; i < n; i++) { out[2 * i] = au_accL[i]; out[2 * i + 1] = au_accR[i]; }
   for (int s = 1; s < au_nN; s++) if (au_N[s].used && au_N[s].type == 2 && au_N[s].p[1].n) ap_prune(&au_N[s].p[1], (double)(F0 + n) / au_rate);
   __atomic_store_n(&au_frames, F0 + n, __ATOMIC_RELEASE);
@@ -335,10 +342,89 @@ static int am_seek(void *ds, ogg_int64_t off, int wh) { AMemR *m = ds; int64_t n
 static int am_close(void *ds) { return 0; }
 static long am_tell(void *ds) { return (long)((AMemR *)ds)->pos; }
 typedef struct { napi_async_work work; napi_deferred def; uint8_t *src; size_t len; int16_t *pcm; int64_t frames; int nch, sr; char err[128]; } ADec;
+static int ff_am_read(void *op, uint8_t *buf, int sz) {
+  AMemR *m = (AMemR *)op;
+  if (m->pos >= m->n) return AVERROR_EOF;
+  size_t avail = m->n - m->pos; int take = (size_t)sz < avail ? sz : (int)avail;
+  memcpy(buf, m->p + m->pos, take); m->pos += take; return take;
+}
+static int64_t ff_am_seek(void *op, int64_t off, int wh) {
+  AMemR *m = (AMemR *)op;
+  if (wh == AVSEEK_SIZE) return (int64_t)m->n;
+  int64_t np = wh == SEEK_SET ? off : wh == SEEK_CUR ? (int64_t)m->pos + off : (int64_t)m->n + off;
+  if (np < 0 || np > (int64_t)m->n) return -1;
+  m->pos = (size_t)np; return np;
+}
+// FFmpeg fallback decoder for non-Ogg audio (.m4a, .mp3, .wav, .aac, .flac, .opus, decrypted .rpgmvm)
+static void adec_ffmpeg(ADec *d) {
+  av_log_set_level(AV_LOG_ERROR);
+  AMemR m = { d->src, d->len, 0 };
+  uint8_t *iob = av_malloc(32768);
+  AVIOContext *avio = iob ? avio_alloc_context(iob, 32768, 0, &m, ff_am_read, NULL, ff_am_seek) : NULL;
+  AVFormatContext *fmt = avio ? avformat_alloc_context() : NULL;
+  if (!fmt) { if (avio) { av_freep(&avio->buffer); avio_context_free(&avio); } else av_free(iob); snprintf(d->err, sizeof d->err, "ffmpeg alloc failed"); return; }
+  fmt->pb = avio; fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
+  if (avformat_open_input(&fmt, NULL, NULL, NULL) < 0) {
+    avformat_free_context(fmt); av_freep(&avio->buffer); avio_context_free(&avio);
+    snprintf(d->err, sizeof d->err, "unsupported audio stream"); return;
+  }
+  AVCodecContext *cc = NULL; struct SwrContext *swr = NULL; AVPacket *pkt = NULL; AVFrame *fr = NULL;
+  int16_t *pcm = NULL; int64_t n = 0, cap = 65536; int oc = 2, sr = 44100;
+  if (avformat_find_stream_info(fmt, NULL) < 0) { snprintf(d->err, sizeof d->err, "audio stream info failed"); goto fail; }
+  const AVCodec *codec = NULL;
+  int si = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
+  if (si < 0 || !codec) { snprintf(d->err, sizeof d->err, "no audio stream"); goto fail; }
+  cc = avcodec_alloc_context3(codec);
+  avcodec_parameters_to_context(cc, fmt->streams[si]->codecpar);
+  if (avcodec_open2(cc, codec, NULL) < 0) { snprintf(d->err, sizeof d->err, "audio codec open failed"); goto fail; }
+  sr = cc->sample_rate > 0 ? cc->sample_rate : 44100;
+  oc = cc->ch_layout.nb_channels == 1 ? 1 : 2;
+  AVChannelLayout outL; av_channel_layout_default(&outL, oc);
+  if (swr_alloc_set_opts2(&swr, &outL, AV_SAMPLE_FMT_S16, sr, &cc->ch_layout, cc->sample_fmt, sr, 0, NULL) < 0 || swr_init(swr) < 0) {
+    av_channel_layout_uninit(&outL); snprintf(d->err, sizeof d->err, "swr init failed"); goto fail;
+  }
+  av_channel_layout_uninit(&outL);
+  if (fmt->duration > 0) { int64_t est = (int64_t)((double)fmt->duration / AV_TIME_BASE * sr) + 4096; if (est > cap && est < 60000000) cap = est; }
+  pcm = malloc((size_t)cap * oc * 2);
+  pkt = av_packet_alloc(); fr = av_frame_alloc();
+  if (!pcm || !pkt || !fr) { snprintf(d->err, sizeof d->err, "out of memory"); goto fail; }
+  for (int eof = 0; !eof; ) {
+    int r = av_read_frame(fmt, pkt);
+    if (r < 0) { eof = 1; avcodec_send_packet(cc, NULL); }
+    else {
+      if (pkt->stream_index != si) { av_packet_unref(pkt); continue; }
+      avcodec_send_packet(cc, pkt); av_packet_unref(pkt);
+    }
+    while (avcodec_receive_frame(cc, fr) == 0) {
+      int outN = (int)av_rescale_rnd(swr_get_delay(swr, sr) + fr->nb_samples, sr, sr, AV_ROUND_UP);
+      if (n + outN > cap) { cap = (n + outN) * 2; int16_t *q = realloc(pcm, (size_t)cap * oc * 2); if (!q) { snprintf(d->err, sizeof d->err, "out of memory"); goto fail; } pcm = q; }
+      uint8_t *outP[1] = { (uint8_t *)(pcm + n * oc) };
+      int got = swr_convert(swr, outP, outN, (const uint8_t **)fr->extended_data, fr->nb_samples);
+      if (got > 0) n += got;
+    }
+  }
+  // flush resampler
+  for (;;) {
+    int outN = 4096;
+    if (n + outN > cap) { cap = (n + outN) * 2; int16_t *q = realloc(pcm, (size_t)cap * oc * 2); if (!q) { snprintf(d->err, sizeof d->err, "out of memory"); goto fail; } pcm = q; }
+    uint8_t *outP[1] = { (uint8_t *)(pcm + n * oc) };
+    int got = swr_convert(swr, outP, outN, NULL, 0);
+    if (got <= 0) break;
+    n += got;
+  }
+  if (n < 1) { snprintf(d->err, sizeof d->err, "empty audio stream"); goto fail; }
+  d->pcm = pcm; d->frames = n; d->nch = oc; d->sr = sr; pcm = NULL;
+fail:
+  free(pcm); av_frame_free(&fr); av_packet_free(&pkt);
+  if (swr) swr_free(&swr);
+  if (cc) avcodec_free_context(&cc);
+  avformat_close_input(&fmt);
+  av_freep(&avio->buffer); avio_context_free(&avio);
+}
 static void adec_exec(napi_env env, void *data) {
   ADec *d = data; AMemR m = { d->src, d->len, 0 };
   ov_callbacks cb = { am_read, am_seek, am_close, am_tell }; OggVorbis_File vf;
-  if (ov_open_callbacks(&m, &vf, NULL, 0, cb) < 0) { snprintf(d->err, sizeof d->err, "not an Ogg Vorbis stream"); return; }
+  if (ov_open_callbacks(&m, &vf, NULL, 0, cb) < 0) { adec_ffmpeg(d); return; }
   vorbis_info *vi = ov_info(&vf, -1); int nch = vi->channels, sr = (int)vi->rate;
   ogg_int64_t tot = ov_pcm_total(&vf, -1); int64_t cap = tot > 0 ? tot : 65536;
   int oc = nch > 2 ? 2 : nch; int16_t *pcm = malloc((size_t)cap * oc * 2);

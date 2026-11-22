@@ -33,7 +33,7 @@ PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关
   - F2 + Y：显示 / 隐藏帧数
   - F2 + 上 / 下：调节音量
 - **游戏内 PocketMZ 菜单**：帧率 30 / 60、速度、帧数显示、音量、渲染分辨率、运行时切换（NW.js / β / 自动）、游戏中关闭 ES（按游戏设置）、按键映射、一次性图片预处理、存档备份。
-- **可选的 β 运行时（实验性）**：不用浏览器的轻量运行时（Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile），打包为约 40 MB 的只读叠加镜像 `beta-runtime.sqfs`。内存峰值比 NW.js 低约 150～280 MB、启动更快，与 NW.js 共用同一存档目录；可在游戏内 F2 菜单或设置界面中按游戏 / 全局切换（默认仍为 NW.js），遇到不兼容的游戏时「自动」模式会自动退回 NW.js。
+- **可选的 β 运行时（实验性）**：不用浏览器的轻量运行时（Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / FFmpeg），打包为约 77 MB 的只读叠加镜像 `beta-runtime.sqfs`。原生支持 Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` 音频与 `<video>`（`.mp4` / `.webm` 等全屏播放及 WebGL 纹理上传）；内存峰值比 NW.js 低约 150～280 MB、启动更快，与 NW.js 共用同一存档目录；可在游戏内 F2 菜单或设置界面中按游戏 / 全局切换（默认仍为 NW.js），遇到不兼容的游戏时「自动」模式会自动退回 NW.js。
 - **性能**：按屏幕分辨率渲染；默认 30 fps；大图在加载时缩小并保存持久缓存；窗口内容按显示比例绘制；跳过屏幕外的角色精灵；菜单和战斗的背景快照预先模糊。
 - **内存保护**：cgroup 内存上限；看门狗在掌机因交换分区卡死之前结束游戏；修复了 MV / MZ 引擎中的若干内存泄漏；BGM / BGS 改为边解码边播放（不再整首解码进内存，循环点精确到采样）；MZ 切换地图时保留上一张地图的图块图；短音效只解码一次；场景切换时主动回收内存。
 - **PC 转换工具**：带图形界面，可选择把视频重新编码为 480p / 720p（`tools/`）。
@@ -100,7 +100,7 @@ PocketMZ is an unofficial project, not affiliated with KADOKAWA or Gotcha Gotcha
 - gptokeyb button mapping, plus per-game key mapping in the in-game menu.
 - Hold-F2 hotkeys: menu (F1), quit (Start), title (Select), save and load screens (L3, R3), slow motion (L1), hold fast-forward (R1), pause (A), screenshot (X), FPS display (Y), volume (Up/Down).
 - In-game PocketMZ menu: frame rate (30/60), speed, FPS display, volume, render scale, runtime switch (NW.js / β / auto), close ES while playing (per game), key mapping, one-time image precompile, save backups.
-- Optional β runtime (experimental): a lightweight browser-less runtime (Node 24 + custom N-API addon `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile) shipped as an ~40 MB read-only overlay image (`beta-runtime.sqfs`). Uses ~150–280 MB less peak RAM and boots faster while sharing saves with NW.js; selectable per game or globally (`nw` stays default), with automatic fallback to NW.js in `auto` mode.
+- Optional β runtime (experimental): a lightweight browser-less runtime (Node 24 + custom N-API addon `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / FFmpeg) shipped as an ~77 MB read-only overlay image (`beta-runtime.sqfs`). Supports native Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` audio and `<video>` playback (`.mp4` / `.webm` fullscreen & WebGL texture upload). Uses ~150–280 MB less peak RAM and boots faster while sharing saves with NW.js; selectable per game or globally (`nw` stays default), with automatic fallback to NW.js in `auto` mode.
 - Performance: rendering at screen resolution, 30 fps default, large images downscaled at load with a persistent cache, window contents drawn at the display scale, off-screen sprites skipped, pre-blurred menu backgrounds.
 - Memory protection: cgroup limits, and a watchdog that ends the game before the handheld stalls in swap. Leak fixes for the MV and MZ engines; BGM / BGS decoded in small pieces while playing instead of in full (sample-accurate loop points); MZ keeps the previous map's tileset images across a transfer; short sound effects decoded once; a full GC at scene changes.
 - PC converter tool with a GUI (in `tools/`), with optional video re-encode to 480p or 720p.

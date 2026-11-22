@@ -95,10 +95,10 @@ cd /storage/pocketmz-new && sh pocketmz-install.sh   # --es: also add the ES sys
 
 ### β 运行时镜像（可选，实验性）
 
-β（不用浏览器的原生运行时：Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / libjpeg-turbo / libwebp）的发布形式是一个约 40 MB 的只读镜像 `beta-runtime.sqfs`，叠在 `rootfs.sqfs` 上，不含编译器、头文件、文档。
+β（不用浏览器的原生运行时：Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / libjpeg-turbo / libwebp / FFmpeg）的发布形式是一个约 77 MB 的只读镜像 `beta-runtime.sqfs`，叠在 `rootfs.sqfs` 上，不含编译器、头文件、文档。
 
 准备开发叠加层（在掌机上）：
-1. 以 `/storage/pocketmz/rootfs` 为底层建叠加层 `beta/root`，在其中用 Debian trixie apt 安装编译依赖（`gcc`、`pkg-config`、`libsdl2-dev`、`libcairo2-dev`、`libpango1.0-dev`、`libvorbis-dev`、`libpng-dev`、`libjpeg62-turbo-dev`、`libwebp-dev` 等）。
+1. 以 `/storage/pocketmz/rootfs` 为底层建叠加层 `beta/root`，在其中用 Debian trixie apt 安装编译依赖（`gcc`、`pkg-config`、`libsdl2-dev`、`libcairo2-dev`、`libpango1.0-dev`、`libvorbis-dev`、`libpng-dev`、`libjpeg62-turbo-dev`、`libwebp-dev`、`libavformat-dev`、`libavcodec-dev`、`libswresample-dev`、`libswscale-dev` 等）。
 2. 在其上建叠加层 `beta/root24`，引入 Debian forky 源（pin 优先级 100）仅安装 `nodejs` 与 `libnode-dev`（Node 24）。
 3. 在 PC 上运行 `sh beta/pmzrt/deploy.sh`，在叠加层内编译 `pmzrt.node`。
 
@@ -125,7 +125,7 @@ sh beta/beta-image.sh
    - 默认 `nw` 启动正常；
    - 游戏内 F2+F1 菜单「运行时」可切换 `NW.js / β / 自动`，菜单底部正确显示当前运行时与 β 安装状态；
    - `POCKETMZ_GAME_RUNTIME=auto POCKETMZ_BETA_FORCE_FAIL=test` 触发退出码 3 后，同一次启动自动切回 NW.js 并写入 `beta-status.json`，再次启动直接走 NW.js。
-4. **基础功能抽查**：标题与地图画面无花屏/接缝、BGM 循环无缝、按键与 F2 热键正常、存档读写与启动前自动备份正常（α 与 β 存档互通）、退出后正常回到 ES 且不残留 `nw` / `node` 进程。
+4. **基础功能抽查**：标题与地图画面无花屏/接缝、BGM 循环无缝、按键与 F2 热键正常、存档读写与启动前自动备份正常（α 与 β 存档互通）、退出后正常回到 ES 且不残留 `nw` / `node` 进程；β 运行时另跑 `test-media.js` 验证 `.m4a/.mp3/.wav` 音频与 `<video>` 播放（ES 3.0 与 `PMZ_GLES=2` 均 0 GL 错误）。
 5. **发布检查**：`python tools/pocketmz-export-repo.py` 导出无敏感词命中；若打运行环境包，确认 `THIRD-PARTY.txt` 与镜像内 `/usr/share/pocketmz/third-party/` 存在。
 
 卸载：

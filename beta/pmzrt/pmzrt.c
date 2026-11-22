@@ -163,7 +163,9 @@ static napi_value Swap(napi_env env, napi_callback_info info) {
 }
 
 static void au_close(void);
+static void vid_close_all(void);
 static napi_value Shutdown(napi_env env, napi_callback_info info) {
+  vid_close_all();
   au_close();
   if (g_ctx) { SDL_GL_DeleteContext(g_ctx); g_ctx = NULL; }
   if (g_win) { SDL_DestroyWindow(g_win); g_win = NULL; }
@@ -592,7 +594,8 @@ static napi_value WritePng(napi_env env, napi_callback_info info) {
 }
 
 #include "pmzrt_canvas.c"   // Canvas 2D (Cairo + Pango), registers its exports with DEF
-#include "pmzrt_audio.c"    // audio mixer + Ogg decode (WebAudio backend), registers its exports with DEF
+#include "pmzrt_audio.c"    // audio mixer + Ogg/FFmpeg decode (WebAudio backend), registers its exports with DEF
+#include "pmzrt_video.c"    // native <video> playback (FFmpeg + GLES2 + audio ring), registers its exports with DEF
 
 #define EXPORT(name, fn) do { napi_value fv_; napi_create_function(env, name, NAPI_AUTO_LENGTH, fn, NULL, &fv_); napi_set_named_property(env, exports, name, fv_); } while (0)
 NAPI_MODULE_INIT() {
