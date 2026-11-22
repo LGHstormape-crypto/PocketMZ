@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install (or update) the RPG Maker MV/MZ runtime from an extracted bundle into /storage/pocketmz.
 # Usage: sh pocketmz-install.sh [--es]     (run from the extracted bundle folder)
-# Existing games/ (saves), home/ (browser profile) and rootfs/ are kept. Then scans for games.
+# Existing games/ (saves), home/ (browser profile) and rootfs/ are kept; a bundle made with --beta also brings beta-runtime.sqfs + beta/*.sh (merged into beta/). Then scans for games.
 # --es: also add the ES system "RPGMZ" (run by PocketMZ) and the Tools entry "Scan PocketMZ Games"
 #       in the user config (for a stock ROCKNIX; a system image can ship them instead, see
 #       INTEGRATION.md). Without it games are listed in Ports, unless the system is already there.
@@ -17,9 +17,16 @@ if pidof nw >/dev/null 2>&1; then echo "a game is running - quit it first" >&2; 
 mkdir -p "$RZ/games" "$RZ/home"
 if [ "$FROM" != "$RZ" ]; then
   [ -x "$RZ/pocketmz-chroot.sh" ] && "$RZ/pocketmz-chroot.sh" umount all 2>/dev/null || true
+  [ -f "$FROM/beta-runtime.sqfs" ] && [ -x "$RZ/beta/beta-mount.sh" ] && "$RZ/beta/beta-mount.sh" umount 2>/dev/null || true   # the β image is replaced below
   for f in "$FROM"/*; do
     n=$(basename "$f")
     case "$n" in games|home|rootfs) continue ;; esac
+    if [ "$n" = beta ]; then   # β runtime scripts: merge file by file, the dev folder beta/ (overlays, logs, shots) must stay
+      [ -x "$RZ/beta/beta-mount.sh" ] && "$RZ/beta/beta-mount.sh" umount 2>/dev/null || true
+      mkdir -p "$RZ/beta"
+      for bf in "$f"/*; do cp -a "$bf" "$RZ/beta/$(basename "$bf").new" && mv -f "$RZ/beta/$(basename "$bf").new" "$RZ/beta/$(basename "$bf")"; done
+      continue
+    fi
     if [ "$n" = launcher ] && [ -d "$RZ/launcher/library" ]; then   # keep the menu's state and covers
       rm -rf "$RZ/launcher.new"; cp -a "$f" "$RZ/launcher.new"; rm -rf "$RZ/launcher.new/library"
       mv "$RZ/launcher/library" "$RZ/launcher.new/library"; rm -rf "$RZ/launcher"; mv "$RZ/launcher.new" "$RZ/launcher"
@@ -29,6 +36,7 @@ if [ "$FROM" != "$RZ" ]; then
   done
 fi
 chmod +x "$RZ"/*.sh "$RZ/gkd-thermal" 2>/dev/null || true
+[ -f "$RZ/beta-runtime.sqfs" ] && echo "β runtime (experimental) installed: set \"runtime\": \"beta\" or \"auto\" in settings.json / a game's pocketmz.json to use it (default: nw)"
 rm -f "$RZ/dev"                      # release mode: no debug REPL plugin in the games
 if [ "$(get_setting gpu.driver 2>/dev/null)" != panfrost ]; then
   echo "NOTE: set the GPU driver to panfrost (ES: System Settings -> GPU DRIVER) and reboot;"

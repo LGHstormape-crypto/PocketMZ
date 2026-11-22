@@ -21,6 +21,7 @@ INCLUDE = [
     "LICENSE", "README.md", "BUILD.md",
     "patches/*",
     "scripts/*", "scripts/launcher/*", "scripts/modules/*", "scripts/wpe/*",
+    "beta/*", "beta/pmzrt/*",
     "tools/*",
 ]
 EXCLUDE = [
@@ -29,6 +30,10 @@ EXCLUDE = [
     "scripts/pocketmz-abes.sh", "scripts/pocketmz-entrytest.sh", "scripts/pocketmz-maptest.sh",
     "scripts/pocketmz-memlog.sh", "scripts/pocketmz-proftest.sh", "scripts/pocketmz-soak.sh",
     "scripts/launcher/dev-sample",
+    # internal β dev plan and early single-game / M0 prototypes
+    "beta/PLAN.md", "beta/mzfloor.js", "beta/run-mzfloor.sh", "beta/deploy-run.sh",
+    "beta/mtest.js", "beta/nw-battle-freeze.js", "beta/nw-battle-real.js",
+    "beta/deploy-audiotest.sh", "beta/deploy-canvastest.sh", "beta/run-canvastest.sh",
     "*/__pycache__/*", "*.pyc",
 ]
 # private or game-specific text that must not be published: regular expressions, one per line, in a

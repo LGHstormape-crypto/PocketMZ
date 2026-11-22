@@ -160,6 +160,95 @@ if [ -z "$MENU" ] && [ -d "$SAVEDIR" ] && [ -n "$(ls -A "$SAVEDIR" 2>/dev/null)"
   fi
 fi
 
+# ---- runtime: nw (default) | beta | auto -------------------------------------------------------------
+# "runtime" in the thin copy's pocketmz.json (in-game menu file: F2 menu, item "运行时") wins over the global default in settings.json; POCKETMZ_GAME_RUNTIME (env / games/<id>/env) over both.
+# nw = NW.js (α, the default and the unchanged path below). beta = the browser-less runtime (beta/run-pmzrun.sh, MODE=play). auto = beta unless the game has a "β not OK" mark.
+# Mark: games/<id>/beta-status.json {"ok":false,"reason":..,"beta":<β build>,"game":<game fingerprint (SRCSIG)>,"time":..}; ignored when the β build or the game changed.
+# For auto the first launch of a game runs a static scan (pocketmz-betascan.sh: m4a/mp4/webm/gif, movies/, play-movie command, playVideo) and stores the result in the same file (ok:true = scanned, nothing found).
+# When β fails (exit 3 = its own boot / COMPAT check, or a crash in the first 45 s) the game is marked and started again on NW.js right here (falls through to the code below); a normal quit ends the script.
+# Test hook: POCKETMZ_BETA_FORCE_FAIL=<text> makes β fail on purpose once it reaches the first scene.
+pmz_cgroup() {
+  # Memory cgroup: when the game outgrows it, only the game is OOM-killed
+  # (instead of the whole handheld thrashing in swap). Values in MB, override via env.
+  CG=/sys/fs/cgroup/unified/pocketmz
+  MEM_MAX="${POCKETMZ_MEM_MAX:-760}" SWAP_MAX="${POCKETMZ_SWAP_MAX:-420}"
+  MEM_HIGH="${POCKETMZ_MEM_HIGH:-$MEM_MAX}"   # memory.high below max throttles (slow start)
+  if grep -qw memory /sys/fs/cgroup/unified/cgroup.subtree_control 2>/dev/null || \
+     echo "+memory" > /sys/fs/cgroup/unified/cgroup.subtree_control 2>/dev/null; then
+    [ -d "$CG" ] && [ -z "$(cat "$CG/cgroup.procs")" ] && rmdir "$CG"   # fresh peak/events
+    mkdir -p "$CG"
+    echo $((MEM_MAX << 20)) > "$CG/memory.max"
+    echo $((MEM_HIGH << 20)) > "$CG/memory.high"
+    echo $((SWAP_MAX << 20)) > "$CG/memory.swap.max"
+    echo 1 > "$CG/memory.oom.group"
+    OOM_BEFORE=$(sed -n 's/^oom_kill //p' "$CG/memory.events")
+    echo $$ > "$CG/cgroup.procs" && echo "cgroup $CG high=${MEM_HIGH}M max=${MEM_MAX}M swap=${SWAP_MAX}M"
+  fi
+}
+RT=nw
+if [ -z "$MENU" ]; then
+  RT="${POCKETMZ_GAME_RUNTIME:-$(grep -o '"runtime": *"[a-z]*"' "$POCKETMZ_GAME/pocketmz.json" 2>/dev/null | head -1 | cut -d'"' -f4)}"
+  [ -z "$RT" ] && RT=$(gset runtime)
+  case "$RT" in beta|auto) ;; *) RT=nw ;; esac
+fi
+BSTAT="$RZ/games/$ID/beta-status.json"
+bs_get() { [ -f "$BSTAT" ] && grep -o "\"$1\": *\"[^\"]*\"" "$BSTAT" | head -1 | cut -d'"' -f4; }
+bs_write() {   # <true|false> <reason>
+  printf '{"ok":%s,"reason":"%s","beta":"%s","game":"%s","time":"%s"}\n' "$1" "$(printf '%s' "$2" | tr -d '"\' | tr '\n\r\t' '   ' | cut -c1-200)" "$BVER" "$SRCSIG" "$(date '+%F %T')" > "$BSTAT.tmp" && mv -f "$BSTAT.tmp" "$BSTAT"
+}
+# β root: PMZ_ROOTDIR=auto (beta-mount.sh) = the release image beta-runtime.sqfs (read-only overlay on the α image) when installed, else the dev overlay root24 so a development
+# handheld keeps working; neither installed -> β is "not installed" below. An explicit PMZ_ROOTDIR in the environment (rt | root24 | root) wins. Only the β branch sets it.
+[ "$RT" != nw ] && export PMZ_ROOTDIR="${PMZ_ROOTDIR:-auto}"
+if [ "$RT" != nw ]; then
+  BVER=$("$RZ/beta/beta-version.sh" 2>/dev/null)
+  if [ ! -x "$RZ/beta/run-pmzrun.sh" ] || [ -z "$BVER" ]; then echo "runtime $RT: β not installed, using NW.js"; RT=nw; fi
+fi
+# facts for the in-game menu's runtime item (the game's root does not see /storage): global default, β installed (image or dev overlay)
+case "$(gset runtime)" in nw|beta|auto) export POCKETMZ_RT_GLOBAL="$(gset runtime)" ;; *) export POCKETMZ_RT_GLOBAL=nw ;; esac
+if [ -x "$RZ/beta/run-pmzrun.sh" ] && { [ -f "$RZ/beta-runtime.sqfs" ] || [ -d "$RZ/beta/upper24" ]; }; then export POCKETMZ_BETA_INST=1; else export POCKETMZ_BETA_INST=0; fi
+if [ "$RT" = auto ]; then
+  if [ "$(bs_get beta)" = "$BVER" ] && [ "$(bs_get game)" = "$SRCSIG" ]; then
+    if grep -q '"ok": *false' "$BSTAT"; then echo "runtime auto: β not OK for this game ($(bs_get reason)), using NW.js"; RT=nw; fi
+  else
+    BS_T0=$(date +%s%N); BS_WHY=$("$PMZ/pocketmz-betascan.sh" "$SRC"); BS_RC=$?
+    echo "β scan: rc=$BS_RC $(( ($(date +%s%N) - BS_T0) / 1000000 )) ms ${BS_WHY}"
+    if [ $BS_RC -ne 0 ]; then bs_write false "scan: $BS_WHY"; RT=nw; else bs_write true "scan ok"; fi
+  fi
+fi
+if [ "$RT" != nw ]; then
+  export POCKETMZ_RT_NOW=beta
+  echo "runtime: β ($BVER) root: $("$RZ/beta/beta-mount.sh" "$PMZ_ROOTDIR" 2>/dev/null)"
+  pmz_cgroup
+  # same start-up settings as the NW.js path: render scale from the in-game menu file, locale-independent TZ, 30 fps default (run-pmzrun.sh would use 60)
+  RS=$(grep -o '"renderScale": *"[a-z0-9.]*"' "$POCKETMZ_GAME/pocketmz.json" 2>/dev/null | head -1 | cut -d'"' -f4); [ -n "$RS" ] && export POCKETMZ_RENDER_SCALE="$RS"
+  export POCKETMZ_DEFAULT_FPS="${POCKETMZ_DEFAULT_FPS:-30}"
+  TZ="${TZ:-$(get_setting system.timezone 2>/dev/null)}"; export TZ="${TZ:-UTC}"
+  BFAIL=/tmp/pmz-beta-fail.txt; rm -f "$BFAIL" /tmp/pmz-beta-compat.txt
+  ts "beta start"; BT0=$SECONDS
+  POCKETMZ_TITLE="$(basename "${L:-$SRC}" .rpgmz)" MODE=play PMZ_GAME_ID="$ID" PMZ_GUARD=1 PMZ_GUARD_FORCE="$(printf %s "$POCKETMZ_BETA_FORCE_FAIL" | tr -c "A-Za-z0-9._-" _)" \
+    PMZ_FAIL_FILE="$BFAIL" PMZ_COMPAT_FILE=/tmp/pmz-beta-compat.txt "$RZ/beta/run-pmzrun.sh"
+  BRC=$?; BDT=$((SECONDS - BT0))
+  ts "beta exit $BRC after ${BDT}s"
+  BWHY=""
+  if [ $BRC -eq 3 ]; then BWHY="$(head -c 300 "$BFAIL" 2>/dev/null)"; [ -z "$BWHY" ] && BWHY="exit 3"
+  elif [ $BRC -ne 0 ] && [ $BDT -lt 45 ]; then
+    case $BRC in 130|137|143) ;; *) BWHY="crash (exit $BRC) ${BDT}s after start" ;; esac   # SIGINT/KILL/TERM = the user's quit combo or the system, not a β failure
+  fi
+  rm -f "$BFAIL" /tmp/pmz-beta-compat.txt
+  if [ -z "$BWHY" ]; then
+    if [ -f "$CG/memory.events" ]; then
+      echo "cgroup peak: $(cat "$CG/memory.peak" 2>/dev/null) events: $(tr '\n' ' ' < "$CG/memory.events")"
+      [ "$(sed -n 's/^oom_kill //p' "$CG/memory.events")" != "${OOM_BEFORE:-0}" ] && { msg "内存不足，游戏已退出（请把当前情况告诉开发者）"; sleep 4; }
+    fi
+    exit $BRC
+  fi
+  echo "β failed: $BWHY - marking the game and starting it on NW.js"
+  bs_write false "$BWHY"
+  msg "β 运行时不兼容这个游戏，改用 NW.js 重新启动"
+fi
+# ---- NW.js path (α, unchanged) ----
+export POCKETMZ_RT_NOW=nw   # (only read by the in-game menu)
+
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}"
 export SWAYSOCK="${SWAYSOCK:-$XDG_RUNTIME_DIR/sway-ipc.0.sock}"
 APPID=$(sed -n 's/^ *"name" *: *"\([^"]*\)".*/\1/p' "$POCKETMZ_GAME/package.json" | head -1)
@@ -198,22 +287,7 @@ fi
 # whose window was left tiled next to ES at half width)
 ( for i in $(seq 1 90); do sleep 1; swaymsg "[app_id=\"${APPID}\"] fullscreen enable, focus" >/dev/null 2>&1 && break; done ) &
 
-# Memory cgroup: when the game outgrows it, only the game is OOM-killed
-# (instead of the whole handheld thrashing in swap). Values in MB, override via env.
-CG=/sys/fs/cgroup/unified/pocketmz
-MEM_MAX="${POCKETMZ_MEM_MAX:-760}" SWAP_MAX="${POCKETMZ_SWAP_MAX:-420}"
-MEM_HIGH="${POCKETMZ_MEM_HIGH:-$MEM_MAX}"   # memory.high below max throttles (slow start)
-if grep -qw memory /sys/fs/cgroup/unified/cgroup.subtree_control 2>/dev/null || \
-   echo "+memory" > /sys/fs/cgroup/unified/cgroup.subtree_control 2>/dev/null; then
-  [ -d "$CG" ] && [ -z "$(cat "$CG/cgroup.procs")" ] && rmdir "$CG"   # fresh peak/events
-  mkdir -p "$CG"
-  echo $((MEM_MAX << 20)) > "$CG/memory.max"
-  echo $((MEM_HIGH << 20)) > "$CG/memory.high"
-  echo $((SWAP_MAX << 20)) > "$CG/memory.swap.max"
-  echo 1 > "$CG/memory.oom.group"
-  OOM_BEFORE=$(sed -n 's/^oom_kill //p' "$CG/memory.events")
-  echo $$ > "$CG/cgroup.procs" && echo "cgroup $CG high=${MEM_HIGH}M max=${MEM_MAX}M swap=${SWAP_MAX}M"
-fi
+pmz_cgroup   # defined above (also used by the β runtime branch)
 
 # Memory watchdog. The cgroup alone does not stop the handheld from thrashing: when RAM + swap run
 # out system-wide (ES, sway and the game together) everything stalls in swap long before the

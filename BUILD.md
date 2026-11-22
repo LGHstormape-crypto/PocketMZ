@@ -93,6 +93,41 @@ tar -xf pocketmz-bundle-<date>.tar -C /storage/pocketmz-new
 cd /storage/pocketmz-new && sh pocketmz-install.sh   # --es: also add the ES system "RPGMZ"
 ```
 
+### β 运行时镜像（可选，实验性）
+
+β（不用浏览器的原生运行时：Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / libjpeg-turbo / libwebp）的发布形式是一个约 40 MB 的只读镜像 `beta-runtime.sqfs`，叠在 `rootfs.sqfs` 上，不含编译器、头文件、文档。
+
+准备开发叠加层（在掌机上）：
+1. 以 `/storage/pocketmz/rootfs` 为底层建叠加层 `beta/root`，在其中用 Debian trixie apt 安装编译依赖（`gcc`、`pkg-config`、`libsdl2-dev`、`libcairo2-dev`、`libpango1.0-dev`、`libvorbis-dev`、`libpng-dev`、`libjpeg62-turbo-dev`、`libwebp-dev` 等）。
+2. 在其上建叠加层 `beta/root24`，引入 Debian forky 源（pin 优先级 100）仅安装 `nodejs` 与 `libnode-dev`（Node 24）。
+3. 在 PC 上运行 `sh beta/pmzrt/deploy.sh`，在叠加层内编译 `pmzrt.node`。
+
+构建只读镜像并打包（PC 上，需先有 `rootfs.sqfs` 且掌机上无游戏运行）：
+
+```sh
+# Push the sources and build /storage/pocketmz/beta-runtime-<date>.sqfs (+ hard link beta-runtime.sqfs) on the handheld
+sh beta/beta-image.sh
+# Pack it into the bundle (without --beta the bundle is exactly as before)
+/storage/pocketmz/pocketmz-bundle.sh --beta          # + beta-runtime.sqfs and beta/{beta-mount,run-pmzrun,beta-version,pocketmz-test-beta}.sh
+```
+
+`pocketmz-install.sh` 把镜像装到 `/storage/pocketmz/beta-runtime.sqfs`，`beta/*.sh` 逐个文件合并进 `/storage/pocketmz/beta/`（不动开发叠加层）。用法：把 `"runtime"` 设成 `beta` 或 `auto`（游戏内 F2 菜单的「运行时」、全局 `settings.json` 或环境变量 `POCKETMZ_GAME_RUNTIME`），默认仍是 `nw`。β 的根目录由 `beta/beta-mount.sh` 挂载：`rt` = 发布镜像（只读 overlay：`beta/rt` = `beta/rt-img`（β 镜像）+ `root-sqfs`（α 镜像），β 只往 `/tmp`、`/root`、shots 目录等绑定挂载里写），`auto` = 有发布镜像就用 `rt`，否则用开发叠加层 `root24`（启动器用 `auto`，所以开发中的掌机照常工作），`root` / `root24` = 开发叠加层。开发脚本（`deploy-pmzrun.sh`、`autotest-beta.sh`）默认仍用 `root24`；`PMZ_ROOTDIR=rt` 让它们用发布镜像测试。
+
+## 回归清单（发版 / 大改后）
+
+每次改动核心补丁、启动器或重打镜像后，按以下清单验证（均不得修改原游戏目录与真实存档）：
+
+1. **前置检查**：掌机电量充足、4 个 CPU 核心全部在线（`cat /sys/devices/system/cpu/online` 为 `0-3`）、当前无游戏运行、GPU 驱动为 `panfrost`。
+2. **固定种子自动测试（α 与 β）**：至少选 1 款 MZ 与 1 款 MV 游戏，跑 `PMZ_GAME_ID=<id> PMZ_ROOTDIR=rt sh beta/autotest-beta.sh 4 12345`（β 发布镜像）与 `... 4 12345 nw`（α 对照）：
+   - 两者 `trace: hash=` 完全一致、无 JS 报错、无 `LOWMEM` / OOM；
+   - 对比峰值内存与最低 `MemAvailable`，确认无内存回退。
+3. **运行时切换与自动回退**：
+   - 默认 `nw` 启动正常；
+   - 游戏内 F2+F1 菜单「运行时」可切换 `NW.js / β / 自动`，菜单底部正确显示当前运行时与 β 安装状态；
+   - `POCKETMZ_GAME_RUNTIME=auto POCKETMZ_BETA_FORCE_FAIL=test` 触发退出码 3 后，同一次启动自动切回 NW.js 并写入 `beta-status.json`，再次启动直接走 NW.js。
+4. **基础功能抽查**：标题与地图画面无花屏/接缝、BGM 循环无缝、按键与 F2 热键正常、存档读写与启动前自动备份正常（α 与 β 存档互通）、退出后正常回到 ES 且不残留 `nw` / `node` 进程。
+5. **发布检查**：`python tools/pocketmz-export-repo.py` 导出无敏感词命中；若打运行环境包，确认 `THIRD-PARTY.txt` 与镜像内 `/usr/share/pocketmz/third-party/` 存在。
+
 卸载：
 
 ```sh

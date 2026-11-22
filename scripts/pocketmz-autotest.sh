@@ -17,6 +17,7 @@ TS=$RZ/pocketmz-test.sh
 HERE=$(cd "$(dirname "$0")" && pwd)
 JSF=$RZ/pocketmz-autotest.js; [ -f "$JSF" ] || JSF=$HERE/pocketmz-autotest.js
 CG=/sys/fs/cgroup/unified/pocketmz
+GP=${POCKETMZ_PROC:-nw}   # game process name: nw (NW.js); node with POCKETMZ_RUNTIME=beta (see beta/pocketmz-test-beta.sh)
 export XDG_RUNTIME_DIR=/var/run/0-runtime-dir WAYLAND_DISPLAY=wayland-1 SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
 
 TRACE="n/a"; ACTIVE=0; ABORT=0; STARTED=0; RESULTS=$(mktemp /tmp/autotest-results.XXXXXX)
@@ -49,7 +50,7 @@ finish_game() {   # idempotent: stop game, restore saves, write the summary
   [ "$ACTIVE" = 1 ] || return 0
   ACTIVE=0
   STARTED=0; echo "== stopping $ID"
-  if pidof nw >/dev/null; then
+  if pidof $GP >/dev/null; then
     unq "$(rjs 'PMZ_AT.errors()' 6)" | tr '^' '\n' > "$OUT/errors.txt"
     rjs 'PMZ_AT.report()' 6 > "$OUT/report.json"
     TRACE=$(unq "$(rjs 'PMZ_AT.trace()' 6)"); case "$TRACE" in hash=*points=*) ;; *) TRACE="n/a" ;; esac
@@ -114,7 +115,7 @@ run_one() {   # run_one <launcher> <minutes> <mode>
   ID=$(sed -n 's/^# pocketmz: //p; s/^id=//p' "$PORT" | head -1)
   [ -n "$ID" ] || ID=$($RZ/pocketmz-scan.sh --id "$(sed -n 's/^exec .*pocketmz-run.sh "\([^"]*\)".*/\1/p' "$PORT")")
   echo "== $ID  ($PORT)  ${MINUTES} min  $MODE${AT_SEED:+  seed=$AT_SEED}"
-  pidof nw >/dev/null && { echo "a game is running (someone playing?) - stop it first"; RESULT=skipped; return 1; }
+  pidof $GP >/dev/null && { echo "a game is running (someone playing?) - stop it first"; RESULT=skipped; return 1; }
   [ -f "$JSF" ] || { echo "missing $JSF" >&2; return 1; }
   export POCKETMZ_TEST_PORT="$PORT" POCKETMZ_TEST_VIA_ES=0 POCKETMZ_HOTKEYS=0
   local STAMP; STAMP=$(date +%Y%m%d-%H%M%S)
@@ -154,6 +155,7 @@ run_one() {   # run_one <launcher> <minutes> <mode>
     echo "injection failed"; RESULT="inject-failed"; END_S=$(date +%s); finish_game; return 1
   fi
   echo "write paths blocked: $(unq "$(rjs 'PMZ_AT.blocked()' 5)")"
+  [ -f "$AT_PRE_JS" ] && curl -s -m 30 --data-binary @"$AT_PRE_JS" 127.0.0.1:9333 >/dev/null   # dev hook: extra JS injected before the driver starts (e.g. a sampler)
   ENGINE=$(unq "$(rjs 'Utils.RPGMAKER_NAME+" "+Utils.RPGMAKER_VERSION' 5)")
   GTITLE=$(unq "$(rjs '$dataSystem.gameTitle' 5)" | tr -d '|,')
   local opts="{mode:\"$MODE\",minutes:$MINUTES${AT_SEED:+,seed:$AT_SEED}}"
@@ -167,7 +169,7 @@ run_one() {   # run_one <launcher> <minutes> <mode>
   while :; do
     now=$(date +%s); el=$(( now - START_S )); END_S=$now; ELAPSED=$el
     [ $(( el % 30 )) -lt 3 ] && keep_awake
-    if ! pidof nw >/dev/null; then
+    if ! pidof $GP >/dev/null; then
       echo "$(( el * 1000 ))|exit|game process ended" >> "$OUT/events.log"; RESULT="GAME-EXITED"; echo "game process ended at $(mmss $el)"; break
     fi
     r=$(unq "$(rjs 'PMZ_AT.poll()' 6)")
@@ -200,7 +202,7 @@ run_one() {   # run_one <launcher> <minutes> <mode>
       RESULT="LOWMEM(avail=${av}MB swap=${sw}MB)"; echo "memory guard: avail=${av}MB swap=${sw}MB at step $st_step - ending the game"
       echo "$(mmss $el) LOWMEM avail=${av}MB swap=${sw}MB step=$st_step scene=$st_sc map=$st_map" >> "$OUT/hangs.txt"
       echo "$(( el * 1000 ))|LOWMEM|avail=${av}MB swap=${sw}MB step=$st_step" >> "$OUT/events.log"
-      kill -9 $(pidof nw) 2>/dev/null; break
+      kill -9 $(pidof $GP) 2>/dev/null; break
     fi
     # run.log: PocketMZ memory watchdog
     cur=$(grep -c "watchdog:" "$L" 2>/dev/null); cur=${cur:-0}

@@ -14,6 +14,8 @@ PORT="$POCKETMZ_TEST_PORT"
 [ -n "$PORT" ] || { echo "set POCKETMZ_TEST_PORT=<launcher> or POCKETMZ_TEST_ID=<game id>" >&2; exit 2; }
 TID=$(sed -n 's/^# pocketmz: //p; s/^id=//p' "$PORT" | head -1); TID="${TID:-$POCKETMZ_TEST_ID}"
 CG=/sys/fs/cgroup/unified/pocketmz
+# POCKETMZ_RUNTIME=beta: start / stop the β runtime (node + pmzrt, beta/pocketmz-test-beta.sh) instead of the NW.js launcher; everything else (js, mem, shot) is the same
+[ "$POCKETMZ_RUNTIME" = beta ] && case "$1" in start|stop) exec /storage/pocketmz/beta/pocketmz-test-beta.sh "$1" "$TID" ;; esac
 export XDG_RUNTIME_DIR=/var/run/0-runtime-dir WAYLAND_DISPLAY=wayland-1 SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
 js() { curl -s -m "${T:-15}" --data-binary "$1" 127.0.0.1:9333; }
 mb() { [ -f "$1" ] && echo $(( $(cat "$1") >> 20 )) || echo -; }

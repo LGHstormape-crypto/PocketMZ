@@ -67,9 +67,17 @@
 - `/storage/pocketmz/games/<id>/pocketmz.gptk`：这个游戏用自己的按键映射（格式同 `/storage/pocketmz/pocketmz.gptk`）。
 - `/storage/pocketmz/games/<id>/env`：启动参数，例如 `POCKETMZ_MEM_MAX=700`（内存上限 MB）、`POCKETMZ_STOP_ES=1`（运行时关掉 ES，多省约 50 MB）、`POCKETMZ_RENDER_SCALE=off`（关闭"按屏幕分辨率渲染"，默认开启：高分辨率游戏按掌机屏幕大小绘制，省 GPU）。
 
+## 选择运行时（NW.js / β / 自动）
+
+- 游戏内：按住 F2 再按 F1 打开 PocketMZ 菜单，「运行时」一项在 NW.js / β / 自动 之间切换（只对这个游戏，写进副本的 `pocketmz.json` 的 `"runtime"`），下次启动游戏生效；菜单下方小字显示「当前：…」。β 没装时选 β 或自动，会提示「β 未安装，将使用 NW.js」，实际仍用 NW.js。
+- 全局默认：设置（PocketMZ 选择界面）→「游戏默认设置」→「游戏运行时」，写进 `settings.json` 的 `"runtime"`；没有单独设置的游戏用它。
+- 优先级：环境变量 `POCKETMZ_GAME_RUNTIME`（含 `games/<id>/env`）> 游戏的 `pocketmz.json` > 全局 `settings.json` > `nw`。
+- `auto` = 用 β，除非游戏被标记为「β 不兼容」（`games/<id>/beta-status.json`），β 启动失败时同一次启动里自动改用 NW.js。
+
 ## 维护
 
 - 打包整套运行环境（重刷系统后恢复用）：`/storage/pocketmz/pocketmz-bundle.sh` → `/storage/pocketmz-bundle-<日期>.tar`（约 350 MB）。
+- 可选的 β 运行时（实验性，默认仍用 NW.js）：`pocketmz-bundle.sh --beta` 把约 40 MB 的 `beta-runtime.sqfs` 和 `beta/*.sh` 一起打进安装包；在游戏内 F2 菜单的「运行时」或「游戏默认设置」里选 `β` 或「自动」才会用。
 - 安装 / 更新：`mkdir /storage/pocketmz-new && tar -xf pocketmz-bundle-<日期>.tar -C /storage/pocketmz-new && sh /storage/pocketmz-new/pocketmz-install.sh`。已有的存档保留。
   在原版 ROCKNIX 上加 `--es`（`sh .../pocketmz-install.sh --es`），会同时在 ES 里加「RPGMZ」系统和 Tools 里的扫描项；系统镜像已集成时不用加。
 - 卸载：`/storage/pocketmz/pocketmz-uninstall.sh` 先显示会做什么，加 `--yes` 才执行。所有存档会先复制到 `/storage/pocketmz-saves-<日期>/`。
@@ -77,7 +85,6 @@
 
 ## 已知限制
 
-- 启动到标题约 27～33 秒（大部分是浏览器本身的启动）。
-- MV 游戏用单独的补丁（手柄、音频、30/60 帧选项、屏外角色），优化比 MZ 少；尚未用真实 MV 游戏测试。
+- 使用 NW.js 运行时启动到标题约 27～33 秒（大部分是浏览器本身的启动）；实验性 β 运行时启动约 2～10 秒，内存峰值低约 150～280 MB，但部分使用视频（`<video>`）或特殊浏览器 DOM 特性的游戏会自动退回 NW.js，战斗帧率在复杂场景下可能略低于 NW.js。
+- MV 与 MZ 游戏均已有实机测试与运行时优化（渲染缩放、大图缩小缓存、窗口按显示比例绘制、BGM 流式播放、内存泄漏修复、F2 菜单与 β 运行时支持），但部分重负载插件游戏在战斗时仍可能只有 20 帧左右。
 - 内存不足时只有游戏会被关掉（会弹出提示），不会拖死整机。
-- 部分插件很多的游戏战斗时仍可能只有 20 帧左右（插件的属性计算很重）。

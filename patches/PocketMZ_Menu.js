@@ -34,7 +34,7 @@
     const L = ui.startsWith("ja") ? {
         title: "PocketMZ メニュー", resume: "ゲームに戻る", fps: "フレームレート", speed: "速度",
         showFps: "FPS 表示", volume: "全体音量", scale: "描画解像度", scaleAuto: "画面に合わせる",
-        scaleOff: "ゲーム本来", stopEs: "起動中は ES を閉じる", next: "（次回起動から）", quit: "ゲームを終了", quitAsk: "ゲームを終了しますか？（セーブしていない進行は失われます）",
+        scaleOff: "ゲーム本来", runtime: "実行環境", rtAuto: "自動", rtNow: "現在：", rtNext: "次回ゲーム起動から有効", rtNoBeta: "β 未インストール：NW.js を使います", stopEs: "起動中は ES を閉じる", next: "（次回起動から）", quit: "ゲームを終了", quitAsk: "ゲームを終了しますか？（セーブしていない進行は失われます）",
         yes: "終了", no: "戻る", on: "オン", off: "オフ", hint: "F2 + F1：PocketMZ メニュー",
         keys: "↑↓ 選択 · ←→ 変更 · A 決定 · B 戻る",
         backups: "セーブのバックアップ", noBackups: "バックアップはまだありません（ゲーム起動時に自動で作られます）",
@@ -51,7 +51,7 @@
     } : ui.startsWith("en") ? {
         title: "PocketMZ menu", resume: "Resume", fps: "Frame rate", speed: "Speed",
         showFps: "Show FPS", volume: "Master volume", scale: "Render resolution", scaleAuto: "Screen size",
-        scaleOff: "Game size", stopEs: "Close ES while playing", next: " (next start)", quit: "Quit game", quitAsk: "Quit the game? (Unsaved progress is lost)",
+        scaleOff: "Game size", runtime: "Runtime", rtAuto: "Auto", rtNow: "Now: ", rtNext: "Takes effect at the next game start", rtNoBeta: "β is not installed: NW.js will be used", stopEs: "Close ES while playing", next: " (next start)", quit: "Quit game", quitAsk: "Quit the game? (Unsaved progress is lost)",
         yes: "Quit", no: "Back", on: "On", off: "Off", hint: "F2 + F1: PocketMZ menu",
         keys: "↑↓ Select · ←→ Change · A OK · B Back",
         backups: "Save backups", noBackups: "No backups yet (made automatically when the game starts)",
@@ -68,7 +68,7 @@
     } : {
         title: "PocketMZ 菜单", resume: "继续游戏", fps: "帧率", speed: "加速",
         showFps: "显示帧数", volume: "总音量", scale: "渲染分辨率", scaleAuto: "按屏幕",
-        scaleOff: "游戏原始", stopEs: "运行时关闭 ES（省内存）", next: "（下次启动生效）", quit: "退出游戏", quitAsk: "退出游戏？（没存档的进度会丢失）",
+        scaleOff: "游戏原始", runtime: "运行时", rtAuto: "自动", rtNow: "当前：", rtNext: "下次启动游戏生效", rtNoBeta: "β 未安装，将使用 NW.js", stopEs: "运行时关闭 ES（省内存）", next: "（下次启动生效）", quit: "退出游戏", quitAsk: "退出游戏？（没存档的进度会丢失）",
         yes: "退出", no: "返回", on: "开", off: "关", hint: "F2 + F1：PocketMZ 菜单",
         keys: "↑↓ 选择 · ←→ 调整 · A 确定 · B 返回",
         backups: "存档备份", noBackups: "还没有备份（每次启动游戏时自动备份）",
@@ -92,6 +92,17 @@
         try { fs.writeFileSync(SETTINGS + ".tmp", JSON.stringify(set, null, 1)); fs.renameSync(SETTINGS + ".tmp", SETTINGS); } catch (e) {}
     };
     let speed = 1;
+    // runtime (nw | beta | auto): per game in pocketmz.json ("runtime"), else the global default in settings.json, else nw. The launcher (pocketmz-run.sh) passes
+    // POCKETMZ_RT_NOW (the runtime running now), POCKETMZ_RT_GLOBAL (global default) and POCKETMZ_BETA_INST (1 = β installed): /storage is not visible in the game's root.
+    const penv = (window.process && process.env) || {};
+    const RT_OPTS = ["nw", "beta", "auto"];
+    const rtEff = () => RT_OPTS.includes(set.runtime) ? set.runtime : RT_OPTS.includes(penv.POCKETMZ_RT_GLOBAL) ? penv.POCKETMZ_RT_GLOBAL : "nw";
+    const rtName = v => v === "beta" ? "β" : v === "auto" ? L.rtAuto : "NW.js";
+    let rtChanged = false;
+    const rtNote = () => {
+        const v = rtEff(), now = penv.POCKETMZ_RT_NOW;
+        return [now ? L.rtNow + rtName(now) : "", rtChanged ? L.rtNext : "", v !== "nw" && penv.POCKETMZ_BETA_INST === "0" ? L.rtNoBeta : ""].filter(Boolean).join("  ·  ");
+    };
 
     // pause / speed. MZ: SceneManager.update runs determineRepeatNumber() updates per frame.
     // MV 1.6 has no such function: updateMain calls updateInputData + changeScene + updateScene
@@ -281,6 +292,7 @@
         { k: "speed", label: L.speed, v: "×" + speed },
         { k: "showFps", label: L.showFps, v: set.showFps ? L.on : L.off },
         { k: "volume", label: L.volume, v: set.volume + "%" },
+        { k: "runtime", label: L.runtime, v: rtName(rtEff()) },
         { k: "scale", label: L.scale + L.next, v: set.renderScale === "off" ? L.scaleOff : L.scaleAuto },
         { k: "stopES", label: L.stopEs + L.next, v: set.stopES ? L.on : L.off },
         { k: "keymap", label: L.keymap },
@@ -334,7 +346,12 @@
             if (ksel === 0) list.scrollTop = 0;
             else if (s && s.scrollIntoView) s.scrollIntoView({ block: "nearest" });
         } else {
-            items().forEach((it, i) => row(box, it.label, i === sel, it.v !== undefined ? "‹ " + it.v + " ›" : undefined));
+            const list = document.createElement("div"); list.className = "list"; box.appendChild(list);   // compact rows: the main page has too many rows for 480 px otherwise
+            items().forEach((it, i) => row(list, it.label, i === sel, it.v !== undefined ? "‹ " + it.v + " ›" : undefined));
+            const n = rtNote(); if (n) say(box, n, "note");
+            const s = list.querySelector(".row.sel");
+            if (sel === 0) list.scrollTop = 0;
+            else if (s && s.scrollIntoView) s.scrollIntoView({ block: "nearest" });
         }
         const k = document.createElement("div"); k.className = "keys"; k.textContent = L.keys; box.appendChild(k);
     };
@@ -356,6 +373,7 @@
         else if (k === "volume") { set.volume = Math.max(0, Math.min(100, set.volume + (d || 1) * 10)); applyVolume(); save(); }
         else if (k === "scale") { set.renderScale = set.renderScale === "off" ? "auto" : "off"; save(); }
         else if (k === "stopES") { set.stopES = !set.stopES; save(); }
+        else if (k === "runtime") { set.runtime = RT_OPTS[(RT_OPTS.indexOf(rtEff()) + (d || 1) + 3) % 3]; rtChanged = true; save(); }
     };
     // one-time image precompile (PMZ_IMG.prebuild from PocketMZ_Handheld / HandheldMV): runs while
     // the menu is open (the game is paused), progress shown on its page

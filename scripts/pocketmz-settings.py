@@ -7,7 +7,7 @@
 #                                       clean-copies | uninstall; the LAST output line is
 #                                       "OK <message>" or "ERROR <message>"
 # Only file written by this program: $POCKETMZ_DATA/settings.json
-#   {"defaultFps": 30, "renderScale": "auto", "stopES": false}
+#   {"defaultFps": 30, "renderScale": "auto", "stopES": false, "runtime": "nw"}
 # `--selftest` skips SDL completely and checks the pure logic (settings, output parsing).
 import ctypes
 import json
@@ -64,7 +64,7 @@ I18N = {
         "settings": "设置", "scan": "扫描游戏", "defaults": "游戏默认设置", "saves": "存档",
         "runtime": "运行环境", "about": "关于", "exit": "退出",
         "hint": "A 确定  B 返回", "hint_cycle": "左右 修改  A 切换  B 返回",
-        "d_fps": "默认帧率", "d_scale": "渲染缩放", "d_stopes": "运行时关闭 ES",
+        "d_fps": "默认帧率", "d_scale": "渲染缩放", "d_stopes": "运行时关闭 ES", "d_runtime": "游戏运行时（下次启动生效）", "rt_auto": "自动",
         "scale_auto": "自动缩小", "scale_off": "原生分辨率", "on": "开", "off": "关",
         "d_note": "只对没有单独设置的游戏生效；游戏内菜单 (F2+F1) 可单独修改",
         "s_export": "导出全部存档", "s_clean": "清理游戏副本缓存",
@@ -84,7 +84,7 @@ I18N = {
         "settings": "設定", "scan": "ゲームをスキャン", "defaults": "ゲームの既定設定", "saves": "セーブデータ",
         "runtime": "実行環境", "about": "このアプリについて", "exit": "終了",
         "hint": "A 決定  B 戻る", "hint_cycle": "左右 変更  A 切替  B 戻る",
-        "d_fps": "既定フレームレート", "d_scale": "描画スケール", "d_stopes": "実行中に ES を停止",
+        "d_fps": "既定フレームレート", "d_scale": "描画スケール", "d_stopes": "実行中に ES を停止", "d_runtime": "ゲームの実行環境（次回起動から）", "rt_auto": "自動",
         "scale_auto": "自動縮小", "scale_off": "ネイティブ解像度", "on": "オン", "off": "オフ",
         "d_note": "個別設定のないゲームにのみ適用されます。ゲーム内メニュー (F2+F1) で個別に変更できます",
         "s_export": "セーブデータをすべて書き出す", "s_clean": "ゲームのコピーキャッシュを削除",
@@ -105,7 +105,7 @@ I18N = {
         "settings": "Settings", "scan": "Scan games", "defaults": "Game defaults", "saves": "Saves",
         "runtime": "Runtime", "about": "About", "exit": "Exit",
         "hint": "A OK  B Back", "hint_cycle": "Left/Right Change  A Toggle  B Back",
-        "d_fps": "Default FPS", "d_scale": "Render scale", "d_stopes": "Stop ES while playing",
+        "d_fps": "Default FPS", "d_scale": "Render scale", "d_stopes": "Stop ES while playing", "d_runtime": "Game runtime (next start)", "rt_auto": "Auto",
         "scale_auto": "Auto downscale", "scale_off": "Native resolution", "on": "On", "off": "Off",
         "d_note": "Only applies to games without their own setting; change per game in the in-game menu (F2+F1)",
         "s_export": "Export all saves", "s_clean": "Clean game copy cache",
@@ -139,7 +139,7 @@ INFO_KEYS = ("version", "games", "launchers", "withSaves", "dataSize", "free")
 
 
 # ---------- settings.json ----------
-DEFAULTS = {"defaultFps": 30, "renderScale": "auto", "stopES": False}
+DEFAULTS = {"defaultFps": 30, "renderScale": "auto", "stopES": False, "runtime": "nw"}
 
 
 def settings_path():
@@ -162,6 +162,8 @@ def load_settings():
         s["renderScale"] = d["renderScale"]
     if isinstance(d.get("stopES"), bool):
         s["stopES"] = d["stopES"]
+    if d.get("runtime") in ("nw", "beta", "auto"):   # default runtime (β = browser-less runtime); Defaults page cycles it
+        s["runtime"] = d["runtime"]
     return s
 
 
@@ -255,7 +257,7 @@ def selftest():
     s = load_settings()
     s["defaultFps"], s["renderScale"], s["stopES"] = 60, "off", True
     assert save_settings(s)
-    assert load_settings() == {"defaultFps": 60, "renderScale": "off", "stopES": True}
+    assert load_settings() == {"defaultFps": 60, "renderScale": "off", "stopES": True, "runtime": "nw"}
     assert not os.path.exists(settings_path() + ".tmp")
     with open(settings_path(), "w") as f:
         f.write("{not json")
@@ -534,6 +536,8 @@ class App:
              "show": lambda v: T["scale_auto"] if v == "auto" else T["scale_off"]},
             {"label": T["d_stopes"], "cycle": "stopES", "opts": [False, True],
              "show": lambda v: T["on"] if v else T["off"]},
+            {"label": T["d_runtime"], "cycle": "runtime", "opts": ["nw", "beta", "auto"],
+             "show": lambda v: {"nw": "NW.js", "beta": "β", "auto": T["rt_auto"]}[v]},
         ], note=T["d_note"], hint=T["hint_cycle"])
 
     def saves_page(self):

@@ -85,6 +85,8 @@ id=RJxxxxxxxx
 
 这样系统镜像几乎不变大，PocketMZ 可以单独更新；已装好的 `/storage/pocketmz` 不受影响，启动器直接使用。
 
+β 运行时（可选、实验性，默认不用）：`pocketmz-bundle.sh --beta` 会多放 `beta-runtime.sqfs`（约 40 MB，叠在 `rootfs.sqfs` 上的只读镜像）和 `beta/*.sh`，`pocketmz-install.sh` 一并安装；没有它们时启动器自动用 NW.js。运行时选择：每个游戏在游戏内 F2 菜单的「运行时」（`pocketmz.json` 的 `"runtime"`），全局默认在设置的「游戏默认设置」（`settings.json` 的 `"runtime"`），值为 `nw` / `beta` / `auto`；启动器把 `POCKETMZ_RT_NOW`、`POCKETMZ_RT_GLOBAL`、`POCKETMZ_BETA_INST` 传给游戏，菜单靠它们显示当前运行时和 β 是否已安装（游戏的根目录看不到 `/storage`）。镜像仍然只放在 `/storage/pocketmz`，系统镜像不用改。β 用宿主的 GL 驱动（libmali 等）的做法见 `beta/PLAN.md` 的可移植性一节（目前镜像里是 Debian 的 Mesa）。
+
 （旧的做法 B：把整个运行环境放进镜像只读目录，程序目录和数据目录分开——脚本仍然支持：每个脚本按自己所在目录找程序文件，数据固定在 `POCKETMZ_DATA`，默认 `/storage/pocketmz`。镜像会大约 350 MB，一般不推荐。）
 
 ## 8. 选择界面（Ports 包）
