@@ -24,7 +24,7 @@ fi
 # ---------------------------------------------------------------- device side
 [ -n "$(pidof nw)$(pidof node)" ] && { echo "a game (nw/node) is running, abort"; exit 1; }
 DATE=$(date +%Y%m%d); OUT=$RZ/beta-runtime-$DATE.sqfs; A=$RZ/root-sqfs; ST=$W/stage
-COMP="${BETA_IMG_COMP:--comp zstd -Xcompression-level 15 -b 128K}"
+COMP="${BETA_IMG_COMP:--comp zstd -Xcompression-level 19 -b 256K}"
 [ -f $RZ/rootfs.sqfs ] || { echo "no $RZ/rootfs.sqfs (the image is built against it)"; exit 1; }
 grep -q " $A " /proc/mounts || mount -t squashfs -o loop,ro $RZ/rootfs.sqfs $A || exit 1
 R=$($B/beta-mount.sh root24) || { echo "root24 not mounted"; exit 1; }
@@ -60,14 +60,15 @@ for l in libs:
     o = own.get(l) or own.get(norm(os.path.realpath(R + l)[len(R):]))
     if not o: print('WARN no package owns', l)
     else: pk.update(o)
-# not in ldd: loaded with dlopen by SDL2 / Mesa / the Node 24 internals (files identical to α are dropped below, so listing too much is harmless)
+# not in ldd: loaded with dlopen by SDL2 / the Node 24 internals (Mesa/GL lives in α rootfs.sqfs, never pulled from root24)
 EXTRA = ('libc6:arm64 libc-bin libssl3t64:arm64 libfreetype6:arm64 nodejs libnode137:arm64 node-acorn node-cjs-module-lexer node-undici node-minimatch '
-         'node-brace-expansion node-balanced-match node-xtend libegl1:arm64 libegl-mesa0:arm64 libgles2:arm64 libglvnd0:arm64 libgbm1:arm64 libgl1-mesa-dri:arm64 '
-         'libglx-mesa0:arm64 libdrm2:arm64 libdecor-0-0:arm64 libdecor-0-plugin-1-cairo:arm64 libwayland-client0:arm64 libwayland-egl1:arm64 libwayland-cursor0:arm64 '
-         'libxkbcommon0:arm64 libpulse0:arm64 libasound2t64:arm64').split()
+         'node-brace-expansion node-balanced-match node-xtend libdrm2:arm64 libdecor-0-0:arm64 libdecor-0-plugin-1-cairo:arm64 '
+         'libwayland-client0:arm64 libwayland-egl1:arm64 libwayland-cursor0:arm64 libxkbcommon0:arm64 libpulse0:arm64 libasound2t64:arm64').split()
 for e in EXTRA:
     for c in (e, e + ':arm64', e.split(':')[0]):
         if c in plist: pk.add(c); break
+# Never pull Debian's LLVM-bloated Mesa packages from root24 when α rootfs.sqfs provides Mesa
+pk = {k for k in pk if not k.startswith(('libgl1-mesa-dri', 'libegl-mesa0', 'libglx-mesa0', 'libgbm1', 'libllvm', 'libz3-'))}
 SKIP = ('/usr/share/doc/', '/usr/share/man/', '/usr/share/info/', '/usr/share/locale/', '/usr/share/lintian/', '/usr/share/bug/', '/usr/share/pkgconfig/',
         '/usr/include/', '/usr/lib/debug/', '/usr/share/gdb/', '/usr/share/bash-completion/', '/usr/share/menu/', '/usr/share/pixmaps/', '/usr/share/zsh/')
 def skip(p): return p.startswith(SKIP) or p.endswith('.a') or '/pkgconfig/' in p
@@ -105,6 +106,17 @@ def putf(rel, src):
 for rel in ('pmzrun.js', 'overlay.js', 'effect-lifetimes.json', 'patches/PocketMZ_Debug.js'): putf(rel, os.path.join(SRC, rel))
 for f in sorted(os.listdir(os.path.join(SRC, 'pmzrt'))): putf('pmzrt/' + f, os.path.join(SRC, 'pmzrt', f))
 putf('pmzrt/pmzrt.node', R + '/opt/beta/pmzrt/pmzrt.node')
+# Slim decode-only FFmpeg libs (built on BC-250, installed at /opt/beta/ffmpeg/lib)
+ff_dir = R + '/opt/beta/ffmpeg/lib'
+if os.path.isdir(ff_dir):
+    os.makedirs(ST + '/opt/beta/ffmpeg/lib', exist_ok=True)
+    for fn in sorted(os.listdir(ff_dir)):
+        if '.so' not in fn: continue
+        sp, dp = os.path.join(ff_dir, fn), os.path.join(ST + '/opt/beta/ffmpeg/lib', fn)
+        if os.path.islink(sp): os.symlink(os.readlink(sp), dp)
+        elif os.path.isfile(sp): shutil.copy2(sp, dp)
+    os.makedirs(ST + '/etc/ld.so.conf.d', exist_ok=True)
+    open(ST + '/etc/ld.so.conf.d/00-pmz-ffmpeg.conf', 'w').write('/opt/beta/ffmpeg/lib\n')
 os.makedirs(ST + '/opt/beta/shots', exist_ok=True)   # mount point of the shots dir (the image is read-only: mkdir -p of an existing dir works)
 open(ST + '/opt/beta/IMAGE', 'w').write('beta-runtime %s\nbuilt against %s\npackages: %s\n' % (time.strftime('%Y-%m-%d'), 'rootfs.sqfs', ' '.join(sorted(pk))))
 PY
@@ -115,8 +127,9 @@ unshare -m sh -c "
   mount --make-rprivate / &&
   mount -t overlay overlay -o lowerdir=$ST:$A,upperdir=$W/up,workdir=$W/work $W/mnt &&
   mount --bind /proc $W/mnt/proc && mount --bind /dev $W/mnt/dev && mount --bind /sys $W/mnt/sys &&
-  chroot $W/mnt ldconfig &&
-  if chroot $W/mnt ldd /usr/bin/node /opt/beta/pmzrt/pmzrt.node | grep -i 'not found'; then echo 'MISSING LIBS'; exit 1; fi &&
+  chroot $W/mnt /usr/sbin/ldconfig &&
+  if { chroot $W/mnt /usr/bin/env LD_TRACE_LOADED_OBJECTS=1 /lib/ld-linux-aarch64.so.1 /usr/bin/node;
+       chroot $W/mnt /usr/bin/env LD_TRACE_LOADED_OBJECTS=1 /lib/ld-linux-aarch64.so.1 /opt/beta/pmzrt/pmzrt.node; } | grep -i 'not found'; then echo 'MISSING LIBS'; exit 1; fi &&
   chroot $W/mnt /usr/bin/node -e \"require('/opt/beta/pmzrt/pmzrt.node'); console.log('node', process.version, 'pmzrt.node loads')\"
 " || { echo "verification failed"; exit 1; }
 [ -z "$(find $W/up -type c)" ] || { echo "whiteouts in the scratch upper dir"; exit 1; }

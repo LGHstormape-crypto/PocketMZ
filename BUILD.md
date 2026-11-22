@@ -67,13 +67,19 @@ fc-cache -f
 
 ## 5. 打包只读镜像
 
-把根文件系统目录打包为只读镜像 `rootfs.sqfs`。默认会排除 locales、文档等内容；打包前 `pocketmz-licenses.sh` 会把所有软件包的版权与许可证声明、软件包清单（含源码包版本）和源码获取说明汇总到镜像内的 `/usr/share/pocketmz/third-party/`，摘要另存为 `THIRD-PARTY.txt` 随安装包发布。
+把根文件系统目录打包为只读镜像 `rootfs.sqfs`（`zstd -19 -b 256K`）。默认使用**白名单精简模式**：只抽离运行时所需的二进制、`ldd`/`dlopen` 共享库、精简 NW.js（去掉 SwiftShader/Vulkan、`locales/*.pak.info`、`crashpad`、`nw_200_percent.pak`）、`NotoSansCJK-Regular.ttc`（`POCKETMZ_KEEP_BOLD=1` 保留 Bold）、纯 Python `fontTools`（由宿主 `python3` 运行，chroot 不带 `python3.13`）、`xkb`/字体/证书配置，不打包 GTK3/Adwaita、`systemd`/`udev`/`vim`/`perl`/`apt`/`lapack`。
+
+可选进一步瘦身（推荐）：在 x86_64 Linux 构建机上用 `tools/build-slim-deps.sh`（Debian trixie 容器交叉编译）：
+- **无 LLVM 纯 panfrost 版 Mesa 25.0.7**：放到掌机 `/storage/pocketmz/mesa-panfrost/`，`pocketmz-pack.sh` 会自动优先采用并甩掉 118 MB `libLLVM` 与 26 MB `libz3`（`rootfs.sqfs` 从约 226 MB 降至约 **179 MB**）；
+- **纯解码版 FFmpeg 7.1**：放到 `beta/root24/opt/beta/ffmpeg/`，`beta/pmzrt/build.sh` 与 `beta/beta-image.sh` 自动采用（0 外部编码器库依赖，`beta-runtime.sqfs` 从约 76 MB 降至约 **43 MB**）。
+
+打包前 `pocketmz-licenses.sh` 会把所有软件包的版权与许可证声明、软件包清单（含源码包版本）和源码获取说明汇总到镜像内的 `/usr/share/pocketmz/third-party/`，摘要另存为 `THIRD-PARTY.txt` 随安装包发布。
 
 ```sh
-# Pack the rootfs into a read-only squashfs image (default: excludes locales, docs, etc.)
-/storage/pocketmz/pocketmz-pack.sh          # -> rootfs.sqfs, about 330-350 MB
+# Pack the rootfs into a read-only squashfs image (slim whitelist + zstd-19 256K)
+/storage/pocketmz/pocketmz-pack.sh          # -> rootfs.sqfs, ~179 MB with slim Mesa (~226 MB with Debian Mesa)
 
-# Full image, with nothing excluded
+# Full legacy image, with nothing whitelisted out
 POCKETMZ_PACK_FULL=1 /storage/pocketmz/pocketmz-pack.sh
 ```
 
@@ -95,7 +101,7 @@ cd /storage/pocketmz-new && sh pocketmz-install.sh   # --es: also add the ES sys
 
 ### β 运行时镜像（可选，实验性）
 
-β（不用浏览器的原生运行时：Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / libjpeg-turbo / libwebp / FFmpeg）的发布形式是一个约 77 MB 的只读镜像 `beta-runtime.sqfs`，叠在 `rootfs.sqfs` 上，不含编译器、头文件、文档。
+β（不用浏览器的原生运行时：Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / libjpeg-turbo / libwebp / 纯解码 FFmpeg）的发布形式是一个约 43 MB 的只读镜像 `beta-runtime.sqfs`（使用 Debian 全量 FFmpeg 时约 76 MB），叠在 `rootfs.sqfs` 上，不含编译器、头文件、文档。
 
 准备开发叠加层（在掌机上）：
 1. 以 `/storage/pocketmz/rootfs` 为底层建叠加层 `beta/root`，在其中用 Debian trixie apt 安装编译依赖（`gcc`、`pkg-config`、`libsdl2-dev`、`libcairo2-dev`、`libpango1.0-dev`、`libvorbis-dev`、`libpng-dev`、`libjpeg62-turbo-dev`、`libwebp-dev`、`libavformat-dev`、`libavcodec-dev`、`libswresample-dev`、`libswscale-dev` 等）。

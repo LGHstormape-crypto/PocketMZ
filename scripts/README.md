@@ -77,8 +77,8 @@
 
 ## 维护
 
-- 打包整套运行环境（重刷系统后恢复用）：`/storage/pocketmz/pocketmz-bundle.sh` → `/storage/pocketmz-bundle-<日期>.tar`（约 350 MB）。
-- 可选的 β 运行时（实验性，默认仍用 NW.js）：`pocketmz-bundle.sh --beta` 把约 77 MB 的 `beta-runtime.sqfs` 和 `beta/*.sh` 一起打进安装包；在游戏内 F2 菜单的「运行时」或「游戏默认设置」里选 `β` 或「自动」才会用。
+- 打包整套运行环境（重刷系统后恢复用）：`/storage/pocketmz/pocketmz-bundle.sh` → `/storage/pocketmz-bundle-<日期>.tar`（精简打包约 181 MB）。
+- 可选的 β 运行时（实验性，默认仍用 NW.js）：`pocketmz-bundle.sh --beta` 把约 43 MB 的 `beta-runtime.sqfs` 和 `beta/*.sh` 一起打进安装包（α + β 合包约 224 MB）；在游戏内 F2 菜单的「运行时」或「游戏默认设置」里选 `β` 或「自动」才会用。
 - 安装 / 更新：`mkdir /storage/pocketmz-new && tar -xf pocketmz-bundle-<日期>.tar -C /storage/pocketmz-new && sh /storage/pocketmz-new/pocketmz-install.sh`。已有的存档保留。
   在原版 ROCKNIX 上加 `--es`（`sh .../pocketmz-install.sh --es`），会同时在 ES 里加「RPGMZ」系统和 Tools 里的扫描项；系统镜像已集成时不用加。
 - 卸载：`/storage/pocketmz/pocketmz-uninstall.sh` 先显示会做什么，加 `--yes` 才执行。所有存档会先复制到 `/storage/pocketmz-saves-<日期>/`。

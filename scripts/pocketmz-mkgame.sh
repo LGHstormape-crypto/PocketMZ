@@ -100,13 +100,23 @@ if d.get("name") != name:
     d["name"] = name
     json.dump(d, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 PY
-# fonts: subset the ones the game uses (pocketmz-fonts.py in the chroot, MZ layout); keep the
-# symlink on failure
+# fonts: subset the ones the game uses (host python3 + pure-Python fontTools from the image,
+# falling back to chroot python3 if needed; MZ layout); keep the symlink on failure.
 # (once per game: an existing subset folder is kept; POCKETMZ_SUBSET_FONTS=force redoes it)
 if [ -z "$WEB" ] && [ -d "$SRC/fonts" ] && [ "${POCKETMZ_SUBSET_FONTS:-1}" != 0 ] && \
    { [ "$POCKETMZ_SUBSET_FONTS" = force ] || [ -L "$DST/fonts" ] || [ ! -d "$DST/fonts" ]; }; then
-  POCKETMZ_GAME="$DST" POCKETMZ_SRC="$SRC" "$PMZ/pocketmz-chroot.sh" run python3 - < "$PMZ/pocketmz-fonts.py" \
-    || { echo "font subset failed, using original fonts"; rm -rf "$DST/fonts"; ln -sfn /gamesrc/fonts "$DST/fonts"; }
+  "$PMZ/pocketmz-chroot.sh" mount >/dev/null 2>&1 || true
+  FT_DIR=""
+  for d in "$RZ/root-test/usr/lib/python3/dist-packages" "$RZ/root-sqfs/usr/lib/python3/dist-packages" "$RZ/rootfs/usr/lib/python3/dist-packages"; do
+    [ -d "$d/fontTools" ] && { FT_DIR="$d"; break; }
+  done
+  if [ -n "$FT_DIR" ] && command -v python3 >/dev/null 2>&1; then
+    PYTHONPATH="$FT_DIR" POCKETMZ_FONT_SRC="$SRC" POCKETMZ_FONT_DST="$DST" python3 "$PMZ/pocketmz-fonts.py" \
+      || { echo "font subset failed, using original fonts"; rm -rf "$DST/fonts"; ln -sfn /gamesrc/fonts "$DST/fonts"; }
+  else
+    POCKETMZ_GAME="$DST" POCKETMZ_SRC="$SRC" "$PMZ/pocketmz-chroot.sh" run python3 - < "$PMZ/pocketmz-fonts.py" \
+      || { echo "font subset failed, using original fonts"; rm -rf "$DST/fonts"; ln -sfn /gamesrc/fonts "$DST/fonts"; }
+  fi
 fi
 # keep existing saves (MZ: <game>/save/, MV: <game>/www/save/); never overwrite the copy's saves
 mkdir -p "$DST/${WEB}save"

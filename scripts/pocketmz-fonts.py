@@ -9,7 +9,8 @@ original. Re-run is cheap: unchanged fonts with the same character set are kept.
 """
 import glob, hashlib, json, os, re, sys, time
 
-SRC, DST = "/gamesrc", "/game"
+SRC = os.environ.get("POCKETMZ_FONT_SRC", "/gamesrc")
+DST = os.environ.get("POCKETMZ_FONT_DST", "/game")
 EXTS = (".ttf", ".otf", ".woff", ".woff2")
 RANGES = [(0x20, 0x7E), (0xA0, 0xFF), (0x2000, 0x206F), (0x2190, 0x21FF), (0x2460, 0x24FF),
           (0x2500, 0x257F), (0x25A0, 0x25FF), (0x2600, 0x26FF), (0x3000, 0x30FF), (0xFF00, 0xFFEF)]
