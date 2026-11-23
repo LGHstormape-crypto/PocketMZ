@@ -14,13 +14,14 @@ PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关
 
 ## 状态
 
-- 已在 GKD Mini Plus（ROCKNIX）上运行：默认运行时 α（NW.js）需要 **panfrost** GPU 驱动；实验性 β 运行时（无浏览器）现已支持在闭源 **libmali** 驱动及纯 OpenGL ES 2.0 环境下运行。
+- 已在 GKD Mini Plus（ROCKNIX）上运行：默认采用 `auto` 模式（优先使用无浏览器 **β 运行时**，遇不兼容游戏自动退回 **α / NW.js**）。
+- β 运行时同时支持开源 **panfrost** 与闭源 **libmali** 驱动及纯 OpenGL ES 2.0 环境；α（NW.js）需要 **panfrost** GPU 驱动。
 - 其他 RK3566 / 闭源驱动的 Linux 掌机尚未逐台测试，但 β 运行时已去掉 `libGLESv2` 静态链接并支持宿主 GL 驱动直通与显示后端自动选择（Wayland / X11 / KMSDRM）。
 
 ## 功能
 
-- **ES 集成**：安装后在 EmulationStation 中出现「RPGMZ」系统；没有该系统时，游戏列在 Ports 中。
-- **按键**：gptokeyb 手柄映射，每个游戏可在游戏内菜单中单独设置按键映射。
+- **ES 集成与高级设置**：安装后在 EmulationStation 中出现「RPGMZ」系统（没有该系统时列在 Ports 中），并接入 ES「高级系统设置 / 高级游戏设置」（CPU/GPU 调速器、线程数、核心策略、渲染分辨率、平滑画面、自动保存/加载、画面帧率、显示帧数、运行时内核、运行时关闭 ES）。ES 选「自动」时沿用游戏自身设置；显式选择仅作用于当前会话并同步到 F2 菜单，不改写磁盘配置。
+- **按键与虚拟鼠标**：统一 α / β 手柄映射（支持 `pocketmz.gptk` 热重载，可在游戏内菜单单独设置）；右摇杆控制虚拟鼠标指针、L3/R3 模拟鼠标右键/左键，并在 F2 菜单提供鼠标速度（慢 / 标准 / 快）调节。
 - **热键**（按住 F2 再按）：
   - F2 + F1：PocketMZ 菜单
   - F2 + Start：退出游戏
@@ -32,8 +33,8 @@ PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关
   - F2 + X：截图
   - F2 + Y：显示 / 隐藏帧数
   - F2 + 上 / 下：调节音量
-- **游戏内 PocketMZ 菜单**：帧率 30 / 60、速度、帧数显示、音量、渲染分辨率、运行时切换（NW.js / β / 自动）、游戏中关闭 ES（按游戏设置）、按键映射、一次性图片预处理、存档备份。
-- **可选的 β 运行时（实验性）**：不用浏览器的轻量运行时（Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / 精简纯解码 FFmpeg），打包为约 43 MB 的只读叠加镜像 `beta-runtime.sqfs`。原生支持 Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` 音频与 `<video>`（`.mp4` / `.webm` 等全屏播放及 WebGL 纹理上传）；内存峰值比 NW.js 低约 150～280 MB、启动更快，与 NW.js 共用同一存档目录；可在游戏内 F2 菜单、设置界面或 ES 高级设置中按游戏 / 全局切换（默认 `auto`：兼容时优先走 β，遇不兼容游戏自动退回 NW.js）。
+- **游戏内 PocketMZ 菜单（F2 + F1）**：帧率 30 / 60、速度、帧数显示、音量、渲染分辨率、平滑画面（实时 GPU 双线性/邻近过滤）、自动保存/加载（退出自动存 `pmz-autosave.json`，下次启动自动续玩）、运行时切换（NW.js / β / 自动）、游戏中关闭 ES、按键映射与鼠标速度、一次性图片预处理、存档备份（启动前自动滚动备份 5 份）。
+- **β 运行时（Node 24 + `pmzrt`）**：不用浏览器的轻量运行时（Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / 5.9 MB 纯解码 FFmpeg 7.1），打包为约 43 MB 的只读叠加镜像 `beta-runtime.sqfs`（与瘦身后的约 179 MB α 镜像合包共约 224 MB）。原生支持 Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` 音频与 `<video>`（`.mp4` / `.webm` 等全屏播放及 WebGL 纹理上传）；内存峰值比 NW.js 低约 150～280 MB、启动更快（约 8～11 秒），与 NW.js 共用同一存档目录。
 - **性能**：按屏幕分辨率渲染；默认 30 fps；大图在加载时缩小并保存持久缓存；窗口内容按显示比例绘制；跳过屏幕外的角色精灵；菜单和战斗的背景快照预先模糊。
 - **内存保护**：cgroup 内存上限；看门狗在掌机因交换分区卡死之前结束游戏；修复了 MV / MZ 引擎中的若干内存泄漏；BGM / BGS 改为边解码边播放（不再整首解码进内存，循环点精确到采样）；MZ 切换地图时保留上一张地图的图块图；短音效只解码一次；场景切换时主动回收内存。
 - **PC 转换工具**：带图形界面，可选择把视频重新编码为 480p / 720p（`tools/`）。
@@ -92,15 +93,15 @@ PocketMZ is an unofficial project, not affiliated with KADOKAWA or Gotcha Gotcha
 - Not affiliated with or endorsed by KADOKAWA / Gotcha Gotcha Games (RPG Maker), GameKiddy (GKD handhelds), ROCKNIX or the NW.js project.
 - The patches are tuned for the GKD Mini Plus (RK3566, 1 GB RAM); behaviour on other devices is not guaranteed.
 
-**Status:** Works on the GKD Mini Plus (ROCKNIX). The default α runtime (NW.js) requires the **panfrost** GPU driver; the experimental browser-less **β runtime** also works on the closed-source **libmali** driver (runtime GL loading via `SDL_GL_GetProcAddress`, host GL driver passthrough, ES 2.0 fallback, and configurable SDL video backend). Other Linux handhelds are untested.
+**Status:** Works on the GKD Mini Plus (ROCKNIX). The default `auto` mode prefers the browser-less **β runtime** (supporting both **panfrost** and closed-source **libmali** drivers, plus pure OpenGL ES 2.0) and falls back to **α (NW.js)** automatically when needed (α requires **panfrost**). Other Linux handhelds are untested.
 
 **Features:**
 
-- EmulationStation integration (an "RPGMZ" system, with Ports as a fallback).
-- gptokeyb button mapping, plus per-game key mapping in the in-game menu.
+- EmulationStation integration ("RPGMZ" system, with Ports as a fallback) plus ES Advanced System/Game Options (`cpugovernor`, `gpuperf`, `threads`, `forcepack`, render scale, smooth bilinear filtering, auto save/load, FPS cap, FPS counter, runtime selector, stop ES). Choosing "Auto" in ES respects per-game settings; explicit choices apply to the session without overwriting disk configs.
+- Unified α/β controller mapping (`pocketmz.gptk` with 1s hot-reload and per-game key mapping) plus virtual mouse (right stick pointer, L3/R3 right/left click, configurable mouse speed in the F2 menu).
 - Hold-F2 hotkeys: menu (F1), quit (Start), title (Select), save and load screens (L3, R3), slow motion (L1), hold fast-forward (R1), pause (A), screenshot (X), FPS display (Y), volume (Up/Down).
-- In-game PocketMZ menu: frame rate (30/60), speed, FPS display, volume, render scale, runtime switch (NW.js / β / auto), close ES while playing (per game), key mapping, one-time image precompile, save backups.
-- Optional β runtime: a lightweight browser-less runtime (Node 24 + custom N-API addon `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / decode-only FFmpeg) shipped as an ~43 MB read-only overlay image (`beta-runtime.sqfs`). Supports native Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` audio and `<video>` playback (`.mp4` / `.webm` fullscreen & WebGL texture upload). Uses ~150–280 MB less peak RAM and boots faster while sharing saves with NW.js; selectable per game, globally, or in ES Advanced Options (`auto` is default, falling back to NW.js automatically when needed).
+- In-game PocketMZ menu (F2 + F1): frame rate (30/60), speed, FPS display, volume, render scale, smooth filtering (live GPU `LINEAR`/`NEAREST`), auto save/load (`pmz-autosave.json` on quit/launch), runtime switch (NW.js / β / auto), close ES while playing, key mapping & mouse speed, one-time image precompile, save backups (rolling 5 backups before launch).
+- β runtime (Node 24 + `pmzrt`): lightweight browser-less runtime (Node 24 + custom N-API addon `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / 5.9 MB decode-only FFmpeg 7.1) shipped as an ~43 MB read-only overlay image (`beta-runtime.sqfs`, ~224 MB total bundle with the slimmed ~179 MB α image). Supports native Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` audio and `<video>` playback (`.mp4` / `.webm` fullscreen & WebGL texture upload). Uses ~150–280 MB less peak RAM and cold-boots in ~8–11s while sharing saves with NW.js.
 - Performance: rendering at screen resolution, 30 fps default, large images downscaled at load with a persistent cache, window contents drawn at the display scale, off-screen sprites skipped, pre-blurred menu backgrounds.
 - Memory protection: cgroup limits, and a watchdog that ends the game before the handheld stalls in swap. Leak fixes for the MV and MZ engines; BGM / BGS decoded in small pieces while playing instead of in full (sample-accurate loop points); MZ keeps the previous map's tileset images across a transfer; short sound effects decoded once; a full GC at scene changes.
 - PC converter tool with a GUI (in `tools/`), with optional video re-encode to 480p or 720p.
