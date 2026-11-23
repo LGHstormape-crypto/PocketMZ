@@ -141,10 +141,12 @@ if [ "${POCKETMZ_STOP_ES:-0}" = 1 ] && [ -z "$POCKETMZ_DETACHED" ] && systemctl 
   echo "systemd-run failed, running inside ES" >&2
 fi
 
-controlfolder="/roms/ports/PortMaster"
-[ -d /storage/roms/ports/PortMaster ] && controlfolder="/storage/roms/ports/PortMaster"
-source "$controlfolder/control.txt"
-get_controls
+GCDB=$(python3 "$PMZ/pocketmz-pad.py" 2>/dev/null || true)
+[ -n "$GCDB" ] && [ -f "$GCDB" ] && export SDL_GAMECONTROLLERCONFIG_FILE="$GCDB"
+GPTOKEYB=$(command -v gptokeyb 2>/dev/null || true)
+[ -z "$GPTOKEYB" ] && [ -x /storage/roms/ports/PortMaster/gptokeyb ] && GPTOKEYB=/storage/roms/ports/PortMaster/gptokeyb
+[ -z "$GPTOKEYB" ] && [ -x /roms/ports/PortMaster/gptokeyb ] && GPTOKEYB=/roms/ports/PortMaster/gptokeyb
+ESUDO=""
 
 mkdir -p "$RZ/games/$ID"
 exec > "$LOG" 2>&1
@@ -241,20 +243,47 @@ if [ -z "$MENU" ] && { [ ! -f "$POCKETMZ_GAME/${WEB}index.html" ] || [ "$DEV_NOW
   echo "$SRCSIG" > "$SIGF"
 fi
 
-# Save backup before each start (only when the saves changed since the last one); the 5 newest are
-# kept in <thin copy>/save-backups/<date-time>/. The in-game PocketMZ menu can restore them.
-SAVEDIR="$POCKETMZ_GAME/${WEB}save"; BKDIR="$POCKETMZ_GAME/save-backups"
-if [ -z "$MENU" ] && [ -d "$SAVEDIR" ] && [ -n "$(ls -A "$SAVEDIR" 2>/dev/null)" ]; then
-  LASTBK=$(ls -1d "$BKDIR"/2* 2>/dev/null | tail -1)
-  if [ -z "$LASTBK" ] || ! diff -r "$SAVEDIR" "$LASTBK" >/dev/null 2>&1; then
-    NEWBK="$BKDIR/$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "$NEWBK" && cp -a "$SAVEDIR/." "$NEWBK/" && echo "save backup: $NEWBK"
-  fi
-  NBK=$(ls -1d "$BKDIR"/2* 2>/dev/null | wc -l)
-  if [ "$NBK" -gt 5 ]; then
-    ls -1d "$BKDIR"/2* | head -n $((NBK - 5)) | while read -r OLDBK; do
-      case "$OLDBK" in "$BKDIR"/2*) rm -rf "$OLDBK" ;; esac
+# Saves & backups live on the game card (/storage/roms/savestates/rpgmz/<id>/) so OS reflashes never lose them.
+# Migrate any legacy saves from the thin copy safely, then bind-mount into chroot via POCKETMZ_SAVE_DIR / POCKETMZ_BACKUP_DIR.
+if [ -z "$MENU" ]; then
+  SAVE_ROOT="/storage/roms/savestates/rpgmz/$ID"
+  SAVEDIR="$SAVE_ROOT/save"
+  BKDIR="$SAVE_ROOT/save-backups"
+  mkdir -p "$SAVEDIR" "$BKDIR"
+  OLD_SAVE="$POCKETMZ_GAME/${WEB}save"
+  if [ -d "$OLD_SAVE" ] && ! grep -q " $OLD_SAVE " /proc/mounts 2>/dev/null && [ -n "$(ls -A "$OLD_SAVE" 2>/dev/null)" ]; then
+    for _sf in "$OLD_SAVE"/* "$OLD_SAVE"/.[!.]*; do
+      [ -e "$_sf" ] || continue
+      _bn=$(basename "$_sf")
+      [ -e "$SAVEDIR/$_bn" ] || cp -r "$_sf" "$SAVEDIR/$_bn"
     done
+    rm -rf "$OLD_SAVE"/* "$OLD_SAVE"/.[!.]* 2>/dev/null || true
+    echo "migrated legacy saves to $SAVEDIR"
+  fi
+  OLD_BK="$POCKETMZ_GAME/save-backups"
+  if [ -d "$OLD_BK" ] && ! grep -q " $OLD_BK " /proc/mounts 2>/dev/null && [ -n "$(ls -A "$OLD_BK" 2>/dev/null)" ]; then
+    for _bf in "$OLD_BK"/*; do
+      [ -e "$_bf" ] || continue
+      _bn=$(basename "$_bf")
+      [ -e "$BKDIR/$_bn" ] || cp -r "$_bf" "$BKDIR/$_bn"
+    done
+    rm -rf "$OLD_BK"/* 2>/dev/null || true
+    echo "migrated legacy save backups to $BKDIR"
+  fi
+  export POCKETMZ_SAVE_DIR="$SAVEDIR" POCKETMZ_BACKUP_DIR="$BKDIR" POCKETMZ_WEB="$WEB"
+
+  if [ -d "$SAVEDIR" ] && [ -n "$(ls -A "$SAVEDIR" 2>/dev/null)" ]; then
+    LASTBK=$(ls -1d "$BKDIR"/2* 2>/dev/null | tail -1)
+    if [ -z "$LASTBK" ] || ! diff -r "$SAVEDIR" "$LASTBK" >/dev/null 2>&1; then
+      NEWBK="$BKDIR/$(date +%Y%m%d-%H%M%S)"
+      mkdir -p "$NEWBK" && cp -r "$SAVEDIR/." "$NEWBK/" && echo "save backup: $NEWBK"
+    fi
+    NBK=$(ls -1d "$BKDIR"/2* 2>/dev/null | wc -l)
+    if [ "$NBK" -gt 5 ]; then
+      ls -1d "$BKDIR"/2* | head -n $((NBK - 5)) | while read -r OLDBK; do
+        case "$OLDBK" in "$BKDIR"/2*) rm -rf "$OLDBK" ;; esac
+      done
+    fi
   fi
 fi
 
@@ -374,8 +403,8 @@ USER_GPTK="$POCKETMZ_GAME/pocketmz.gptk"
 [ -z "$MENU" ] && [ -f "$USER_GPTK" ] && GPTK_MAP="$USER_GPTK" && echo "button map: $USER_GPTK"
 DEFAULT_GPTK="$GPTK_MAP"; [ "$GPTK_MAP" = "$USER_GPTK" ] && DEFAULT_GPTK="$PMZ/pocketmz.gptk"
 for g in pocketmz.gptk rpgmz.gptk; do [ -f "$RZ/games/$ID/$g" ] && { DEFAULT_GPTK="$RZ/games/$ID/$g"; break; }; done
-$GPTOKEYB "nw" -c "$GPTK_MAP" -hotkey guide &
-if [ -z "$MENU" ]; then
+[ -n "$GPTOKEYB" ] && $GPTOKEYB "nw" -c "$GPTK_MAP" -hotkey guide &
+if [ -z "$MENU" ] && [ -n "$GPTOKEYB" ]; then
   (
     RUN=$$; stamp() { stat -c %Y "$USER_GPTK" 2>/dev/null || echo none; }
     last=$(stamp)

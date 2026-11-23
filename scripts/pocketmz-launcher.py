@@ -17,24 +17,33 @@ import datetime
 import json
 import math
 import os
+import re
+import subprocess
 import sys
+import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(0, os.path.join(HERE, "vendor"))
-os.environ.setdefault("PYSDL2_DLL_PATH", "/usr/lib")
-if sys.platform.startswith("linux"):
-    os.environ.setdefault("SDL_VIDEODRIVER", "wayland")
-os.environ["SDL_VIDEO_WAYLAND_WMCLASS"] = "pocketmz-menu"   # app_id; the caller focuses by it
-
-import sdl2
-import sdl2.sdlimage as img
-import sdl2.sdlttf as ttf
-
 RZ = os.environ.get("POCKETMZ_DATA", "/storage/pocketmz")
-LIB = sys.argv[1] if len(sys.argv) > 1 else os.path.join(RZ, "launcher", "library")
+LIB = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else os.path.join(RZ, "launcher", "library")
+SELFTEST = "--selftest" in sys.argv[1:]
+START_SETTINGS = "--settings" in sys.argv[1:]
 COLS = 3
 RECENT_MAX = 12
+
+sdl2 = None
+img = None
+ttf = None
+if not SELFTEST:
+    sys.path.insert(0, os.path.join(HERE, "vendor"))
+    os.environ.setdefault("PYSDL2_DLL_PATH", "/usr/lib")
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault("SDL_VIDEODRIVER", "wayland")
+    os.environ["SDL_VIDEO_WAYLAND_WMCLASS"] = "pocketmz-menu"   # app_id; the caller focuses by it
+    import sdl2
+    import sdl2.sdlimage as img
+    import sdl2.sdlttf as ttf
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/noto-cjk/NotoSansCJKsc-Regular.otf",
@@ -42,9 +51,9 @@ FONT_CANDIDATES = [
     "/usr/config/emulationstation/resources/DroidSansFallbackFull.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
-# The device's own mapping (PortMaster's get_controls writes it and exports the path; on this
-# handheld it swaps A/B against SDL's default), else PortMaster's generic database.
-GAMEPAD_DB = os.environ.get("SDL_GAMECONTROLLERCONFIG_FILE") or "/storage/roms/ports/PortMaster/gamecontrollerdb.txt"
+# Unified controller DB generated from ES es_input.cfg by pocketmz-pad.py
+GAMEPAD_DB = os.environ.get("SDL_GAMECONTROLLERCONFIG_FILE") or "/tmp/pmz-gamecontrollerdb.txt"
+PROJECT_URL = "https://github.com/LGHstormape-crypto/PocketMZ"
 
 # ---------- colours ----------
 BG = (0x14, 0x16, 0x1c)
@@ -67,42 +76,116 @@ WHITE = (255, 255, 255)
 I18N = {
     "zh": {
         "recent": "最近", "all": "全部", "fav": "收藏",
-        "hints": "A 启动 · X 收藏 · L1/R1 分类 · B 退出",
+        "hints": "A 启动 · X 收藏 · Y 删除 · Start 设置 · L1/R1 分类 · B 退出",
         "convBadge": "需要转换",
         "convWarn": "此游戏的脚本被打包在 Game.exe 里，需要先在电脑上用 PocketMZ 转换器处理",
         "convMsg": "此游戏需要先在电脑上用 PocketMZ 转换器处理，才能在这里运行。",
+        "missBadge": "原文件已丢失",
+        "missMsg": "原游戏文件夹已不存在。按 Y 可删除该映射和残留副本。",
         "today": "今天", "yesterday": "昨天", "daysAgo": lambda n: "%d 天前" % n, "never": "从未",
         "launching": lambda t: "正在启动「" + t + "」…",
         "quit": "退出 PocketMZ？", "no": "否", "yes": "是", "ok": "好",
-        "empty": "没有找到游戏。把 RPG Maker MV/MZ 游戏文件夹放进 roms/rpgmaker，再打开 PocketMZ。",
+        "empty": "没有找到游戏。把 RPG Maker MV/MZ 游戏文件夹放进 roms/rpgmaker，按 Start 扫描游戏。",
         "err": "读取游戏列表失败：",
         "scanning": "正在查找游戏…",
+        "del_ask": lambda t: "删除「%s」？\n会删除原游戏文件夹、ES 映射和运行副本。" % t,
+        "del_keep": "删游戏(保留存档)", "del_all": "连存档彻底删除",
+        "del_all_confirm": lambda t: "确定连同「%s」的存档一起彻底删除？此操作无法恢复！" % t,
+        "deleting": "正在删除…",
+        "settings": "设置", "scan": "扫描游戏", "defaults": "游戏默认设置", "saves": "存档",
+        "runtime": "运行环境", "about": "关于", "exit": "返回游戏列表",
+        "hint": "A 确定  B 返回", "hint_cycle": "左右 修改  A 切换  B 返回",
+        "d_fps": "默认帧率", "d_scale": "渲染缩放", "d_smooth": "平滑游戏（双线性过滤）", "d_stopes": "运行时关闭 ES", "d_runtime": "游戏运行时（下次启动生效）", "rt_auto": "自动",
+        "scale_auto": "自动缩小", "scale_off": "原生分辨率", "on": "开", "off": "关",
+        "d_note": "只对没有单独设置的游戏生效；游戏内菜单 (F2+F1) 或 ES 高级设置可覆盖",
+        "s_export": "导出全部存档", "s_clean": "清理游戏副本缓存",
+        "r_info": "信息", "r_update": "检查更新包", "r_uninstall": "卸载 PocketMZ",
+        "working": "请稍候…", "checking": "正在检查…", "installing": "正在安装…",
+        "confirm_ok": "确定", "cancel": "取消",
+        "clean_confirm": "清理游戏副本缓存？会删除可重建的副本文件，存档不受影响",
+        "uninst1": "卸载 PocketMZ？",
+        "uninst2": "存档保留在 /storage/roms/savestates/rpgmz/，然后删除全部 PocketMZ 程序文件。确定卸载？",
+        "install_q": "安装 {0}？\n当前版本：{1}", "up_to_date": "已是最新版本 {0}", "no_pkg": "没有找到更新包",
+        "take_effect": "下次启动时生效。", "scan_empty": "（没有输出）",
+        "missing": "缺少脚本：{0}", "exit_code": "命令失败（退出码 {0}）",
+        "version": "版本", "games": "游戏", "launchers": "启动项", "withSaves": "有存档",
+        "dataSize": "数据大小", "free": "剩余空间", "ver_line": "版本 {0}",
     },
     "ja": {
         "recent": "最近遊んだ", "all": "すべて", "fav": "お気に入り",
-        "hints": "A 起動 · X お気に入り · L1/R1 分類 · B 終了",
+        "hints": "A 起動 · X お気に入り · Y 削除 · Start 設定 · L1/R1 分類 · B 終了",
         "convBadge": "変換が必要",
         "convWarn": "このゲームのスクリプトは Game.exe に埋め込まれています。先にパソコンで PocketMZ コンバーターを実行してください",
         "convMsg": "このゲームは、先にパソコンで PocketMZ コンバーターを実行しないと起動できません。",
+        "missBadge": "元フォルダなし",
+        "missMsg": "元のゲームフォルダが見つかりません。Y で項目とキャッシュを削除できます。",
         "today": "今日", "yesterday": "昨日", "daysAgo": lambda n: "%d 日前" % n, "never": "未プレイ",
         "launching": lambda t: "「" + t + "」を起動中…",
         "quit": "PocketMZ を終了しますか？", "no": "いいえ", "yes": "はい", "ok": "OK",
-        "empty": "ゲームが見つかりません。RPG Maker MV/MZ のゲームフォルダを roms/rpgmaker に入れてから、PocketMZ を開いてください。",
+        "empty": "ゲームが見つかりません。roms/rpgmaker にゲームを入れて Start でスキャンしてください。",
         "err": "ゲーム一覧の読み込みに失敗しました：",
         "scanning": "ゲームを探しています…",
+        "del_ask": lambda t: "「%s」を削除しますか？\nゲーム本体・ES 項目・コピーを削除します。" % t,
+        "del_keep": "ゲーム削除(セーブ残す)", "del_all": "セーブも含め完全削除",
+        "del_all_confirm": lambda t: "「%s」のセーブデータも完全に削除しますか？元に戻せません！" % t,
+        "deleting": "削除中…",
+        "settings": "設定", "scan": "ゲームをスキャン", "defaults": "ゲームの既定設定", "saves": "セーブデータ",
+        "runtime": "実行環境", "about": "このアプリについて", "exit": "ゲーム一覧に戻る",
+        "hint": "A 決定  B 戻る", "hint_cycle": "左右 変更  A 切替  B 戻る",
+        "d_fps": "既定フレームレート", "d_scale": "描画スケール", "d_smooth": "画面の平滑化（バイリニア）", "d_stopes": "実行中に ES を停止", "d_runtime": "ゲームの実行環境（次回起動から）", "rt_auto": "自動",
+        "scale_auto": "自動縮小", "scale_off": "ネイティブ解像度", "on": "オン", "off": "オフ",
+        "d_note": "個別設定のないゲームに適用されます。ゲーム内 (F2+F1) や ES 詳細設定で変更可",
+        "s_export": "セーブデータをすべて書き出す", "s_clean": "ゲームのコピーキャッシュを削除",
+        "r_info": "情報", "r_update": "更新パッケージを確認", "r_uninstall": "PocketMZ をアンインストール",
+        "working": "お待ちください…", "checking": "確認中…", "installing": "インストール中…",
+        "confirm_ok": "OK", "cancel": "キャンセル",
+        "clean_confirm": "コピーキャッシュを削除しますか？再生成できるファイルのみ削除され、セーブデータは影響を受けません",
+        "uninst1": "PocketMZ をアンインストールしますか？",
+        "uninst2": "セーブデータは /storage/roms/savestates/rpgmz/ に残り、PocketMZ 本体のみ削除されます。実行しますか？",
+        "install_q": "{0} をインストールしますか？\n現在のバージョン：{1}", "up_to_date": "最新バージョンです {0}",
+        "no_pkg": "更新パッケージが見つかりません",
+        "take_effect": "次回の起動から有効になります。", "scan_empty": "（出力なし）",
+        "missing": "スクリプトがありません：{0}", "exit_code": "コマンドが失敗しました（終了コード {0}）",
+        "version": "バージョン", "games": "ゲーム", "launchers": "ランチャー", "withSaves": "セーブあり",
+        "dataSize": "データサイズ", "free": "空き容量", "ver_line": "バージョン {0}",
     },
     "en": {
         "recent": "Recent", "all": "All", "fav": "Favorites",
-        "hints": "A Play · X Favorite · L1/R1 Tabs · B Exit",
+        "hints": "A Play · X Fav · Y Delete · Start Settings · L1/R1 Tabs · B Exit",
         "convBadge": "Needs conversion",
         "convWarn": "This game's scripts are packed inside Game.exe. Process it on a PC with the PocketMZ converter first.",
         "convMsg": "This game must be processed on a PC with the PocketMZ converter before it can run here.",
+        "missBadge": "Missing folder",
+        "missMsg": "Original game folder is gone. Press Y to remove this launcher and thin copy.",
         "today": "Today", "yesterday": "Yesterday", "daysAgo": lambda n: "%d days ago" % n, "never": "Never",
         "launching": lambda t: "Starting \"" + t + "\"…",
         "quit": "Exit PocketMZ?", "no": "No", "yes": "Yes", "ok": "OK",
-        "empty": "No games found. Put RPG Maker MV/MZ game folders into roms/rpgmaker, then open PocketMZ again.",
+        "empty": "No games found. Put MV/MZ folders into roms/rpgmaker, then press Start to scan.",
         "err": "Failed to read the game list: ",
         "scanning": "Looking for games…",
+        "del_ask": lambda t: "Delete \"%s\"?\nRemoves the game folder, ES launcher, and thin copy." % t,
+        "del_keep": "Delete (keep saves)", "del_all": "Delete with saves",
+        "del_all_confirm": lambda t: "Permanently delete \"%s\" AND all its saves? This cannot be undone!" % t,
+        "deleting": "Deleting…",
+        "settings": "Settings", "scan": "Scan games", "defaults": "Game defaults", "saves": "Saves",
+        "runtime": "Runtime", "about": "About", "exit": "Back to games",
+        "hint": "A OK  B Back", "hint_cycle": "Left/Right Change  A Toggle  B Back",
+        "d_fps": "Default FPS", "d_scale": "Render scale", "d_smooth": "Smooth games (bilinear)", "d_stopes": "Stop ES while playing", "d_runtime": "Game runtime (next start)", "rt_auto": "Auto",
+        "scale_auto": "Auto downscale", "scale_off": "Native resolution", "on": "On", "off": "Off",
+        "d_note": "Applies when per-game or ES overrides are unset; change per game via F2+F1",
+        "s_export": "Export all saves", "s_clean": "Clean game copy cache",
+        "r_info": "Info", "r_update": "Check for update package", "r_uninstall": "Uninstall PocketMZ",
+        "working": "Please wait…", "checking": "Checking…", "installing": "Installing…",
+        "confirm_ok": "OK", "cancel": "Cancel",
+        "clean_confirm": "Clean the game copy cache? Rebuildable copies are deleted; saves are not affected.",
+        "uninst1": "Uninstall PocketMZ?",
+        "uninst2": "Saves stay in /storage/roms/savestates/rpgmz/, and PocketMZ files are removed. Continue?",
+        "install_q": "Install {0}?\nCurrent version: {1}", "up_to_date": "Already up to date ({0})",
+        "no_pkg": "No update package found",
+        "take_effect": "Takes effect on next start.", "scan_empty": "(no output)",
+        "missing": "Missing script: {0}", "exit_code": "Command failed (exit code {0})",
+        "version": "Version", "games": "Games", "launchers": "Launchers", "withSaves": "With saves",
+        "dataSize": "Data size", "free": "Free space", "ver_line": "Version {0}",
     },
 }
 
@@ -117,6 +200,152 @@ def pick_lang():
 
 
 T = I18N[pick_lang()]
+INFO_KEYS = ("version", "games", "launchers", "withSaves", "dataSize", "free")
+
+# ---------- settings.json & maint helpers (unified with pocketmz-maint.sh) ----------
+DEFAULTS = {"defaultFps": 30, "renderScale": "auto", "smooth": False, "stopES": False, "runtime": "auto"}
+
+
+def settings_path():
+    return os.path.join(RZ, "settings.json")
+
+
+def load_settings():
+    """Existing file merged over the defaults; a missing/bad file or bad values fall back."""
+    s = dict(DEFAULTS)
+    try:
+        with open(settings_path(), "r", encoding="utf-8-sig") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return s
+    if not isinstance(d, dict):
+        return s
+    if d.get("defaultFps") in (30, 60) and not isinstance(d.get("defaultFps"), bool):
+        s["defaultFps"] = int(d["defaultFps"])
+    if d.get("renderScale") in ("auto", "off"):
+        s["renderScale"] = d["renderScale"]
+    if isinstance(d.get("smooth"), bool):
+        s["smooth"] = d["smooth"]
+    if isinstance(d.get("stopES"), bool):
+        s["stopES"] = d["stopES"]
+    if d.get("runtime") in ("nw", "beta", "auto"):
+        s["runtime"] = d["runtime"]
+    return s
+
+
+def save_settings(s):
+    """Atomic write (tmp + rename). Returns True on success."""
+    try:
+        os.makedirs(RZ, exist_ok=True)
+        dst = settings_path()
+        tmp = dst + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({k: s[k] for k in DEFAULTS}, f, indent=1)
+        os.replace(tmp, dst)
+        return True
+    except OSError as e:
+        sys.stderr.write("write settings.json failed: %s\n" % e)
+        return False
+
+
+def read_version():
+    try:
+        with open(os.path.join(HERE, "VERSION"), "r", encoding="utf-8-sig") as f:
+            return f.readline().strip() or "?"
+    except OSError:
+        return "?"
+
+
+def run_cmd(args, timeout=1800):
+    """Run a command, merged stdout+stderr. Returns (returncode, text)."""
+    try:
+        p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=timeout, stdin=subprocess.DEVNULL)
+        return p.returncode, p.stdout.decode("utf-8", "replace")
+    except FileNotFoundError as e:
+        return 127, str(e)
+    except subprocess.TimeoutExpired:
+        return 124, "timeout"
+    except Exception as e:
+        return 1, repr(e)
+
+
+def parse_maint_output(out, rc):
+    """-> (ok, message, body_lines). The last non-empty line should be 'OK <msg>' / 'ERROR <msg>'."""
+    lines = [ln.rstrip("\r") for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        return False, T["exit_code"].format(rc), []
+    m = re.match(r"^(OK|ERROR)\b[ \t]*(.*)$", lines[-1].strip())
+    if m:
+        return m.group(1) == "OK", m.group(2).strip(), lines[:-1]
+    return False, lines[-1].strip(), lines[:-1]
+
+
+def maint(sub, *args):
+    script = os.path.join(HERE, "pocketmz-maint.sh")
+    if not os.path.isfile(script):
+        return False, T["missing"].format("pocketmz-maint.sh"), []
+    rc, out = run_cmd(["bash", script, sub] + list(args))
+    return parse_maint_output(out, rc)
+
+
+def parse_info(lines):
+    d = {}
+    for ln in lines:
+        if "=" in ln:
+            k, v = ln.split("=", 1)
+            d[k.strip()] = v.strip()
+    return d
+
+
+def info_rows(d):
+    rows = [(T.get(k, k), d[k]) for k in INFO_KEYS if k in d]
+    rows += [(k, v) for k, v in d.items() if k not in INFO_KEYS]
+    return rows
+
+
+def parse_package(body, msg):
+    """find-package OK output: first line 'path<TAB>version' (fall back to the OK message)."""
+    for cand in (body[0] if body else "", msg):
+        if "\t" in cand:
+            p, v = cand.split("\t", 1)
+            if p.strip():
+                return p.strip(), v.strip()
+    return "", ""
+
+
+def selftest():
+    global RZ
+    if not os.environ.get("POCKETMZ_DATA"):
+        RZ = tempfile.mkdtemp(prefix="pmz-selftest-")
+    assert load_settings() == DEFAULTS, "defaults when file is missing"
+    s = load_settings()
+    s["defaultFps"], s["renderScale"], s["smooth"], s["stopES"] = 60, "off", True, True
+    assert save_settings(s)
+    assert load_settings() == {"defaultFps": 60, "renderScale": "off", "smooth": True, "stopES": True, "runtime": "auto"}
+    assert not os.path.exists(settings_path() + ".tmp")
+    with open(settings_path(), "w") as f:
+        f.write("{not json")
+    assert load_settings() == DEFAULTS, "bad file tolerated"
+    with open(settings_path(), "w") as f:
+        f.write('{"defaultFps": 45, "renderScale": 3, "stopES": "yes"}')
+    assert load_settings() == DEFAULTS, "bad values fall back"
+    ok, msg, body = parse_maint_output(
+        "version=1.2.0\ngames=14\nlaunchers=3\nwithSaves=5\ndataSize=1.4G\nfree=22G\nOK info\n", 0)
+    assert ok and msg == "info" and len(body) == 6
+    rows = info_rows(parse_info(body))
+    assert rows[0] == (T["version"], "1.2.0") and rows[5] == (T["free"], "22G"), rows
+    ok, msg, body = parse_maint_output("/storage/up/pocketmz-1.3.0.tar\t1.3.0\nOK found\n", 0)
+    assert ok and parse_package(body, msg) == ("/storage/up/pocketmz-1.3.0.tar", "1.3.0")
+    ok, msg, _ = parse_maint_output("OK deleted game; saves kept in roms/savestates/rpgmz/RJ1/\n", 0)
+    assert ok and "savestates" in msg
+    ok, msg, _ = parse_maint_output("ERROR no package in /storage/roms\n", 1)
+    assert not ok and msg == "no package in /storage/roms"
+    ok, msg, _ = parse_maint_output("", 3)
+    assert not ok and "3" in msg
+    assert parse_package([], "OK") == ("", "")
+    print("launcher+settings selftest ok")
+    return 0
 
 
 # ---------- small helpers ----------
@@ -189,18 +418,22 @@ def safe_name(s):
 
 # Input action names
 DIRS = ("up", "down", "left", "right")
-KEYMAP = {
-    sdl2.SDLK_LEFT: "left", sdl2.SDLK_RIGHT: "right", sdl2.SDLK_UP: "up", sdl2.SDLK_DOWN: "down",
-    sdl2.SDLK_RETURN: "ok", sdl2.SDLK_KP_ENTER: "ok", sdl2.SDLK_ESCAPE: "back",
-    sdl2.SDLK_d: "fav", sdl2.SDLK_PAGEUP: "prev", sdl2.SDLK_PAGEDOWN: "next",
-}
-PADMAP = {
-    sdl2.SDL_CONTROLLER_BUTTON_DPAD_LEFT: "left", sdl2.SDL_CONTROLLER_BUTTON_DPAD_RIGHT: "right",
-    sdl2.SDL_CONTROLLER_BUTTON_DPAD_UP: "up", sdl2.SDL_CONTROLLER_BUTTON_DPAD_DOWN: "down",
-    sdl2.SDL_CONTROLLER_BUTTON_A: "ok", sdl2.SDL_CONTROLLER_BUTTON_B: "back",
-    sdl2.SDL_CONTROLLER_BUTTON_X: "fav",
-    sdl2.SDL_CONTROLLER_BUTTON_LEFTSHOULDER: "prev", sdl2.SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: "next",
-}
+if sdl2:
+    KEYMAP = {
+        sdl2.SDLK_LEFT: "left", sdl2.SDLK_RIGHT: "right", sdl2.SDLK_UP: "up", sdl2.SDLK_DOWN: "down",
+        sdl2.SDLK_RETURN: "ok", sdl2.SDLK_KP_ENTER: "ok", sdl2.SDLK_ESCAPE: "back",
+        sdl2.SDLK_d: "fav", sdl2.SDLK_PAGEUP: "prev", sdl2.SDLK_PAGEDOWN: "next",
+        sdl2.SDLK_y: "del", sdl2.SDLK_DELETE: "del", sdl2.SDLK_BACKSPACE: "del",
+        sdl2.SDLK_TAB: "settings", sdl2.SDLK_F1: "settings",
+    }
+    PADMAP = {
+        sdl2.SDL_CONTROLLER_BUTTON_DPAD_LEFT: "left", sdl2.SDL_CONTROLLER_BUTTON_DPAD_RIGHT: "right",
+        sdl2.SDL_CONTROLLER_BUTTON_DPAD_UP: "up", sdl2.SDL_CONTROLLER_BUTTON_DPAD_DOWN: "down",
+        sdl2.SDL_CONTROLLER_BUTTON_A: "ok", sdl2.SDL_CONTROLLER_BUTTON_B: "back",
+        sdl2.SDL_CONTROLLER_BUTTON_X: "fav", sdl2.SDL_CONTROLLER_BUTTON_Y: "del",
+        sdl2.SDL_CONTROLLER_BUTTON_START: "settings",
+        sdl2.SDL_CONTROLLER_BUTTON_LEFTSHOULDER: "prev", sdl2.SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: "next",
+    }
 DEADZONE = 16000
 REPEAT_FIRST = 0.35
 REPEAT_NEXT = 0.09
@@ -210,6 +443,7 @@ TEXT_CACHE_MAX = 400
 class Menu:
     def __init__(self):
         # ---- data ----
+        self.cfg = load_settings()
         self.games = []
         self.load_error = None
         self.scanning = False
@@ -222,6 +456,9 @@ class Menu:
         self.vis = 2
         self.mode = "grid"          # grid | confirm | msg | launching
         self.confirm_yes = False
+        self.stack = []             # settings pages when non-empty
+        self.modal = None           # {"text","rows","buttons":[(lbl,cb,warn)...],"btn_idx","warn","on_close"}
+        self.busy = None            # {"text","thread","res","cb"}
         self.finish = None          # ("play", game) | ("exit", None) once we should leave
         self.dirty = True
         self.first_shown = False
@@ -804,29 +1041,37 @@ class Menu:
         sdl2.SDL_SetRenderDrawColor(r, BG[0], BG[1], BG[2], 255)
         sdl2.SDL_RenderClear(r)
         S = self.S
-        # header
-        bw = self.put("PocketMZ", 16, ACCENT, self.px, self.hdr_y, self.hdr_h)
-        if self.games:
-            self.draw_tabs(self.px + bw + S(12))
-        if not self.games:
-            self.draw_empty()
+        if self.stack:
+            self.draw_settings_page(self.stack[-1])
         else:
-            self.draw_grid()
-            self.draw_info()
-        if self.mode == "confirm":
-            self.draw_dialog(T["quit"], [(T["no"], not self.confirm_yes), (T["yes"], self.confirm_yes)])
-        elif self.mode == "msg":
-            self.draw_dialog(T["convMsg"], [(T["ok"], True)])
-        elif self.mode == "launching":
-            g = self.list[self.idx] if 0 <= self.idx < len(self.list) else {}
-            self.fill(0, 0, self.W, self.H, BG, 242)
-            px = self.fs(18)
-            lines = self.wrap(T["launching"](str(g.get("title") or g.get("id") or "")), px, self.W - 2 * S(24), 4)
-            lh = int(px * 1.4)
-            y = (self.H - lh * len(lines)) // 2
-            for ln in lines:
-                self.put(ln, 18, TEXT, 0, y, lh, "c", self.W)
-                y += lh
+            # header
+            bw = self.put("PocketMZ", 16, ACCENT, self.px, self.hdr_y, self.hdr_h)
+            if self.games:
+                self.draw_tabs(self.px + bw + S(12))
+            if not self.games:
+                self.draw_empty()
+            else:
+                self.draw_grid()
+                self.draw_info()
+            if self.mode == "confirm":
+                self.draw_dialog(T["quit"], [(T["no"], not self.confirm_yes), (T["yes"], self.confirm_yes)])
+            elif self.mode == "msg":
+                g = self.list[self.idx] if 0 <= self.idx < len(self.list) else {}
+                self.draw_dialog(T["missMsg"] if g.get("missing") else T["convMsg"], [(T["ok"], True)])
+            elif self.mode == "launching":
+                g = self.list[self.idx] if 0 <= self.idx < len(self.list) else {}
+                self.fill(0, 0, self.W, self.H, BG, 242)
+                px = self.fs(18)
+                lines = self.wrap(T["launching"](str(g.get("title") or g.get("id") or "")), px, self.W - 2 * S(24), 4)
+                lh = int(px * 1.4)
+                y = (self.H - lh * len(lines)) // 2
+                for ln in lines:
+                    self.put(ln, 18, TEXT, 0, y, lh, "c", self.W)
+                    y += lh
+        if self.modal:
+            self.draw_modal(self.modal)
+        if self.busy:
+            self.draw_busy(self.busy["text"])
         sdl2.SDL_RenderPresent(r)
 
     def draw_tabs(self, x0):
@@ -971,7 +1216,9 @@ class Menu:
         bh = S(16)
         bx = ix
         badges = []
-        if g.get("needsConversion"):
+        if g.get("missing"):
+            badges.append((T["missBadge"], WARN_BG, WHITE))
+        elif g.get("needsConversion"):
             badges.append((T["convBadge"], WARN_BG, WHITE))
         else:
             badges.append((str(g.get("kind") or "?"), ACCENT, WHITE))
@@ -1026,12 +1273,374 @@ class Menu:
             self.put(lbl, 16, WHITE if on else SECOND, x, y, bh, "c", w)
             x += w + bgap
 
+    # ================= settings & delete UI =================
+    def wrap_lines(self, txt, px, maxw):
+        out = []
+        for para in txt.replace("\t", " ").split("\n"):
+            cur = ""
+            for ch in para:
+                if cur and self.text_w(cur + ch, px) > maxw:
+                    out.append(cur.rstrip())
+                    cur = "" if ch == " " else ch
+                else:
+                    cur += ch
+            out.append(cur.rstrip())
+        return out
+
+    def page(self, title, items, note=None, hint=None):
+        return {"title": title, "items": items, "idx": 0, "top": 0, "note": note, "hint": hint or T["hint"]}
+
+    def open_settings(self):
+        self.cfg = load_settings()
+        self.stack = [self.main_settings_page()]
+        self.dirty = True
+
+    def main_settings_page(self):
+        return self.page(T["settings"], [
+            {"label": T["scan"], "fn": self.do_scan},
+            {"label": T["defaults"], "sub": True, "fn": lambda: self.push_page(self.defaults_page())},
+            {"label": T["saves"], "sub": True, "fn": lambda: self.push_page(self.saves_page())},
+            {"label": T["runtime"], "sub": True, "fn": lambda: self.push_page(self.runtime_page())},
+            {"label": T["about"], "fn": self.show_about},
+            {"label": T["exit"], "fn": self.close_settings},
+        ])
+
+    def defaults_page(self):
+        return self.page(T["defaults"], [
+            {"label": T["d_fps"], "cycle": "defaultFps", "opts": [30, 60],
+             "show": lambda v: str(v)},
+            {"label": T["d_scale"], "cycle": "renderScale", "opts": ["auto", "off"],
+             "show": lambda v: T["scale_auto"] if v == "auto" else T["scale_off"]},
+            {"label": T["d_smooth"], "cycle": "smooth", "opts": [False, True],
+             "show": lambda v: T["on"] if v else T["off"]},
+            {"label": T["d_stopes"], "cycle": "stopES", "opts": [False, True],
+             "show": lambda v: T["on"] if v else T["off"]},
+            {"label": T["d_runtime"], "cycle": "runtime", "opts": ["nw", "beta", "auto"],
+             "show": lambda v: {"nw": "NW.js", "beta": "β", "auto": T["rt_auto"]}[v]},
+        ], note=T["d_note"], hint=T["hint_cycle"])
+
+    def saves_page(self):
+        return self.page(T["saves"], [
+            {"label": T["s_export"], "fn": lambda: self.run_maint(T["working"], ("export-saves",), self.show_result)},
+            {"label": T["s_clean"], "fn": lambda: self.confirm_modal(
+                T["clean_confirm"], lambda: self.run_maint(T["working"], ("clean-copies",), self.show_result))},
+        ])
+
+    def runtime_page(self):
+        return self.page(T["runtime"], [
+            {"label": T["r_info"], "fn": self.do_info},
+            {"label": T["r_update"], "fn": self.do_find_package},
+            {"label": T["r_uninstall"], "fn": self.do_uninstall},
+        ])
+
+    def push_page(self, p):
+        self.stack.append(p)
+        self.dirty = True
+
+    def pop_page(self):
+        if len(self.stack) > 1:
+            self.stack.pop()
+        else:
+            self.stack.clear()
+        self.dirty = True
+
+    def close_settings(self):
+        self.stack.clear()
+        self.dirty = True
+
+    def message_modal(self, text, rows=None, warn=False, on_close=None):
+        self.modal = {
+            "text": text, "rows": rows, "warn": warn, "on_close": on_close,
+            "buttons": [(T["confirm_ok"], lambda: None, False)], "btn_idx": 0,
+        }
+        self.dirty = True
+
+    def confirm_modal(self, text, on_yes, warn=False, default_yes=False):
+        self.modal = {
+            "text": text, "rows": None, "warn": warn, "on_close": None,
+            "buttons": [(T["confirm_ok"], on_yes, warn), (T["cancel"], lambda: None, False)],
+            "btn_idx": 0 if default_yes else 1,
+        }
+        self.dirty = True
+
+    def show_result(self, ok, msg, extra=None, on_close=None):
+        self.message_modal(msg if not extra else msg + "\n" + extra, warn=not ok, on_close=on_close if ok else None)
+
+    def run_async(self, text, func, cb):
+        b = {"text": text, "res": None, "cb": cb}
+
+        def work():
+            try:
+                b["res"] = func()
+            except Exception as e:
+                b["res"] = (False, repr(e), [])
+        b["thread"] = threading.Thread(target=work, daemon=True)
+        self.busy = b
+        self.held = None
+        b["thread"].start()
+        self.dirty = True
+
+    def run_maint(self, text, args, cb):
+        self.run_async(text, lambda: maint(*args), lambda r: cb(r[0], r[1]))
+
+    def poll_busy(self):
+        b = self.busy
+        if b and not b["thread"].is_alive():
+            self.busy = None
+            self.dirty = True
+            b["cb"](b["res"])
+
+    def refresh_library_sync(self):
+        lib_py = os.path.join(HERE, "pocketmz-library.py")
+        if os.path.isfile(lib_py):
+            run_cmd([sys.executable, lib_py, LIB])
+
+    def do_scan(self):
+        def work():
+            script = os.path.join(HERE, "pocketmz-scan.sh")
+            if not os.path.isfile(script):
+                return False, T["missing"].format("pocketmz-scan.sh"), []
+            rc, out = run_cmd(["bash", script])
+            self.refresh_library_sync()
+            lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()]
+            return rc == 0, "\n".join(lines[-6:]) or T["scan_empty"], []
+
+        def done(r):
+            self.load_initial()
+            self.show_result(r[0], r[1])
+
+        self.run_async(T["scanning"], work, done)
+
+    def do_info(self):
+        def done(r):
+            ok, msg, body = r
+            rows = info_rows(parse_info(body)) if ok else []
+            if ok and rows:
+                self.message_modal("", rows=rows)
+            else:
+                self.show_result(ok, msg)
+        self.run_async(T["working"], lambda: maint("info"), done)
+
+    def do_find_package(self):
+        def done(r):
+            ok, msg, body = r
+            if not ok:
+                return self.show_result(False, msg)
+            path, ver = parse_package(body, msg)
+            if not path:
+                return self.show_result(True, T["no_pkg"])
+            cur = read_version()
+            if ver == cur:
+                return self.show_result(True, T["up_to_date"].format(cur))
+            self.confirm_modal(T["install_q"].format(ver or "?", cur), lambda: self.run_maint(
+                T["installing"], ("update", path),
+                lambda ok2, msg2: self.show_result(ok2, msg2, T["take_effect"] if ok2 else None)),
+                default_yes=True)
+        self.run_async(T["checking"], lambda: maint("find-package"), done)
+
+    def do_uninstall(self):
+        def finish(ok, msg):
+            self.show_result(ok, msg, on_close=lambda: setattr(self, "finish", ("exit", None)))
+        self.confirm_modal(T["uninst1"], lambda: self.confirm_modal(
+            T["uninst2"], lambda: self.run_maint(T["working"], ("uninstall",), finish), warn=True))
+
+    def show_about(self):
+        self.message_modal("PocketMZ\n%s\nMIT License\nRPG Maker MV/MZ runner for handhelds\n%s"
+                           % (T["ver_line"].format(read_version()), PROJECT_URL))
+
+    def cycle_setting(self, item, d):
+        opts = item["opts"]
+        key = item["cycle"]
+        cur = self.cfg.get(key)
+        i = opts.index(cur) if cur in opts else 0
+        self.cfg[key] = opts[(i + d) % len(opts)]
+        save_settings(self.cfg)
+        self.dirty = True
+
+    def prompt_delete_game(self):
+        if not (0 <= self.idx < len(self.list)):
+            return
+        g = self.list[self.idx]
+        gid = str(g["id"])
+        gdir = str(g.get("dir") or "")
+        title = str(g.get("title") or gid)
+
+        def run_del(mode):
+            def work():
+                ok, msg, body = maint("delete-game", gid, gdir, mode)
+                if ok:
+                    self.refresh_library_sync()
+                return ok, msg, body
+
+            def done(r):
+                if r[0]:
+                    self.load_initial()
+                self.show_result(r[0], r[1])
+
+            self.run_async(T["deleting"], work, done)
+
+        self.modal = {
+            "text": T["del_ask"](title), "rows": None, "warn": False, "on_close": None,
+            "buttons": [
+                (T["del_keep"], lambda: run_del("keep-saves"), False),
+                (T["del_all"], lambda: self.confirm_modal(T["del_all_confirm"](title), lambda: run_del("delete-all"), warn=True), True),
+                (T["cancel"], lambda: None, False),
+            ],
+            "btn_idx": 2,
+        }
+        self.dirty = True
+
+    def draw_settings_page(self, pg):
+        S = self.S
+        px, pw = self.px, self.pw
+        hy, hh = self.hdr_y, self.hdr_h
+        bw = self.put("PocketMZ", 16, ACCENT, px, hy, hh)
+        self.put("·  " + pg["title"], 16, TEXT, px + bw + S(8), hy, hh)
+        self.fill(px, hy + hh + S(2), pw, 1, KEY_BORDER)
+        hint_h = S(28)
+        hint_y = self.oy + S(480) - S(8) - hint_h
+        self.rrect(px, hint_y, pw, hint_h, S(6), PANEL)
+        self.put(self.fit(pg["hint"], self.fs(13), pw - S(16)), 13, SECOND, px, hint_y, hint_h, "c", pw)
+        y0 = hy + hh + S(12)
+        row_h, gap = S(46), S(6)
+        note_lines = self.wrap_lines(pg["note"], self.fs(13), pw - S(8)) if pg["note"] else []
+        note_h = (len(note_lines) * S(20) + S(8)) if note_lines else 0
+        vis = max(1, (hint_y - S(8) - y0 - note_h + gap) // (row_h + gap))
+        items = pg["items"]
+        if pg["idx"] < pg["top"]:
+            pg["top"] = pg["idx"]
+        elif pg["idx"] >= pg["top"] + vis:
+            pg["top"] = pg["idx"] - vis + 1
+        shown = items[pg["top"]:pg["top"] + vis]
+        for n, it in enumerate(shown):
+            i = pg["top"] + n
+            y = y0 + n * (row_h + gap)
+            if i == pg["idx"]:
+                self.rrect_border(px, y, pw, row_h, S(6), S(2), ACCENT, CARD_SEL)
+            else:
+                self.rrect(px, y, pw, row_h, S(6), CARD)
+            self.put(it["label"], 18, TEXT, px + S(16), y, row_h)
+            if "cycle" in it:
+                v = it["show"](self.cfg.get(it["cycle"]))
+                if i == pg["idx"]:
+                    v = "◀  " + v + "  ▶"
+                self.put(v, 18, ACCENT, px, y, row_h, "r", pw - S(16))
+            elif it.get("sub"):
+                self.put("›", 18, ACCENT if i == pg["idx"] else SECOND, px, y, row_h, "r", pw - S(16))
+        yy = y0 + len(shown) * (row_h + gap) + S(4)
+        for ln in note_lines:
+            self.put(ln, 13, SECOND, px + S(4), yy, S(20))
+            yy += S(20)
+
+    def draw_modal(self, d):
+        S = self.S
+        self.fill(0, 0, self.W, self.H, (0, 0, 0), 176)
+        px = self.fs(15)
+        pad_x, pad_y, bd = S(20), S(16), S(2)
+        maxw = int(self.W * 0.88) - 2 * (pad_x + bd)
+        lines = self.wrap_lines(d["text"], px, maxw)[:12] if d["text"] else []
+        lh = int(px * 1.55)
+        rows = d["rows"] or []
+        lw = max((self.text_w(k, px) for k, _ in rows), default=0)
+        vw = max((self.text_w(v, px) for _, v in rows), default=0)
+        vw = min(vw, max(S(40), maxw - lw - S(24)))
+        rows_w = (lw + S(24) + vw) if rows else 0
+        buttons = d["buttons"]
+        bh = int(px * 1.4) + S(8)
+        bgap = S(12)
+        bws = [max(S(72), self.text_w(lbl, px) + 2 * S(12)) for lbl, _, _ in buttons]
+        row_w = sum(bws) + bgap * (len(bws) - 1)
+        tw = max((self.text_w(ln, px) for ln in lines), default=0)
+        inner = min(maxw, max(tw, rows_w, row_w))
+        bw_ = inner + 2 * (pad_x + bd)
+        body_h = lh * len(lines) + lh * len(rows) + (S(6) if lines and rows else 0)
+        bh_ = 2 * (pad_y + bd) + body_h + S(14) + bh
+        bx = (self.W - bw_) // 2
+        by = (self.H - bh_) // 2
+        edge = WARN if d["warn"] else ACCENT
+        self.rrect_border(bx, by, bw_, bh_, S(8), bd, edge, CARD)
+        y = by + bd + pad_y
+        for ln in lines:
+            self.put(ln, 15, WARN if d["warn"] else TEXT, bx, y, lh, "c", bw_)
+            y += lh
+        if lines and rows:
+            y += S(6)
+        rx = bx + (bw_ - rows_w) // 2
+        for k, v in rows:
+            self.put(k, 15, SECOND, rx, y, lh)
+            self.put(self.fit(v, px, vw), 15, TEXT, rx + lw + S(24), y, lh)
+            y += lh
+        y += S(14)
+        x = bx + (bw_ - row_w) // 2
+        for n, ((lbl, _, is_warn), w) in enumerate(zip(buttons, bws)):
+            on = n == d["btn_idx"]
+            bg = (WARN_BG if is_warn else ACCENT) if on else PANEL
+            self.rrect(x, y, w, bh, S(6), bg)
+            self.put(lbl, 15, WHITE if on else SECOND, x, y, bh, "c", w)
+            x += w + bgap
+
+    def draw_busy(self, text):
+        S = self.S
+        self.fill(0, 0, self.W, self.H, BG, 235)
+        cx, cy = self.W // 2, self.H // 2 - S(28)
+        phase = int(time.monotonic() * 10) % 8
+        sz = S(8)
+        for i in range(8):
+            a = 255 - ((phase - i) % 8) * 28
+            ang = i * math.pi / 4
+            self.fill(int(cx + math.cos(ang) * S(22)) - sz // 2, int(cy + math.sin(ang) * S(22)) - sz // 2,
+                      sz, sz, ACCENT, max(40, a))
+        self.put(text, 18, TEXT, 0, cy + S(44), S(26), "c", self.W)
+
     # ================= input =================
     def now(self):
         return time.monotonic()
 
     def dispatch(self, a):
-        if self.mode == "launching":
+        if self.busy or self.mode == "launching":
+            return
+        if self.modal:
+            d = self.modal
+            nbtn = len(d["buttons"])
+            if a in ("left", "up") and nbtn > 1:
+                d["btn_idx"] = (d["btn_idx"] - 1) % nbtn
+            elif a in ("right", "down") and nbtn > 1:
+                d["btn_idx"] = (d["btn_idx"] + 1) % nbtn
+            elif a == "ok":
+                _, cb, _ = d["buttons"][d["btn_idx"]]
+                on_close = d["on_close"]
+                self.modal = None
+                cb()
+                if on_close:
+                    on_close()
+            elif a == "back":
+                on_close = d["on_close"] if nbtn == 1 else None
+                self.modal = None
+                if on_close:
+                    on_close()
+            else:
+                return
+            self.dirty = True
+            return
+        if self.stack:
+            pg = self.stack[-1]
+            items = pg["items"]
+            it = items[pg["idx"]]
+            if a == "up":
+                pg["idx"] = (pg["idx"] - 1) % len(items)
+            elif a == "down":
+                pg["idx"] = (pg["idx"] + 1) % len(items)
+            elif a in ("left", "right"):
+                if "cycle" in it:
+                    self.cycle_setting(it, -1 if a == "left" else 1)
+            elif a == "ok":
+                if "cycle" in it:
+                    self.cycle_setting(it, 1)
+                elif it.get("fn"):
+                    it["fn"]()
+            elif a in ("back", "settings"):
+                self.pop_page()
+            self.dirty = True
             return
         if self.mode == "confirm":
             if a == "left":
@@ -1050,6 +1659,12 @@ class Menu:
             if a in ("ok", "back"):
                 self.mode = "grid"
                 self.dirty = True
+            return
+        if a == "settings":
+            self.open_settings()
+            return
+        if a == "del":
+            self.prompt_delete_game()
             return
         if a == "left":
             self.move(-1, 0)
@@ -1082,7 +1697,7 @@ class Menu:
         if not (0 <= self.idx < len(self.list)):
             return
         g = self.list[self.idx]
-        if g.get("needsConversion"):
+        if g.get("missing") or g.get("needsConversion"):
             self.mode = "msg"
             self.dirty = True
             return
@@ -1167,8 +1782,13 @@ class Menu:
     def run(self):
         self.init_sdl()
         self.load_initial()
+        if START_SETTINGS:
+            self.open_settings()
         ev = sdl2.SDL_Event()
         while True:
+            self.poll_busy()
+            if self.busy:
+                self.dirty = True
             if self.dirty:
                 self.dirty = False
                 self.draw()
@@ -1179,7 +1799,9 @@ class Menu:
                 break
             now = self.now()
             timeout = 250
-            if self.thumbs_pending:
+            if self.busy:
+                timeout = 60
+            elif self.thumbs_pending:
                 timeout = 1
             elif self.held:
                 timeout = max(1, min(50, int((self.held[2] - now) * 1000)))
@@ -1221,6 +1843,8 @@ class Menu:
 
 
 def main():
+    if SELFTEST:
+        return selftest()
     try:
         os.makedirs(LIB, exist_ok=True)
     except OSError:

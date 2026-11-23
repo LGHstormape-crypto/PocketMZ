@@ -22,14 +22,19 @@ export SWAYSOCK="${SWAYSOCK:-$XDG_RUNTIME_DIR/sway-ipc.0.sock}" POCKETMZ_UI_LANG
 # The menu: native SDL2 (pocketmz-launcher.py, opens in ~1 s, reads the pad itself) when the
 # system's SDL2 libraries load; else the HTML page in NW.js (pocketmz-run.sh --menu, ~20 s).
 # POCKETMZ_HTML_MENU=1 forces the HTML one.
-# same pad mapping as the games (PortMaster: SDL_GAMECONTROLLERCONFIG_FILE for this device)
-[ -f /storage/roms/ports/PortMaster/control.txt ] && { source /storage/roms/ports/PortMaster/control.txt; get_controls; } >/dev/null 2>&1
+# same pad mapping as the games (generated from ES es_input.cfg by pocketmz-pad.py)
+GCDB=$(python3 "$PMZ/pocketmz-pad.py" 2>/dev/null || true)
+[ -n "$GCDB" ] && [ -f "$GCDB" ] && export SDL_GAMECONTROLLERCONFIG_FILE="$GCDB"
+LAUNCHER_ARGS=""
+for a in "$@"; do
+  [ "$a" = "--settings" ] && LAUNCHER_ARGS="--settings"
+done
 NATIVE=0
 [ "${POCKETMZ_HTML_MENU:-0}" != 1 ] && PYSDL2_DLL_PATH=/usr/lib python3 -c   "import sys; sys.path.insert(0, '$PMZ/vendor'); import sdl2, sdl2.sdlttf, sdl2.sdlimage" >/dev/null 2>&1 && NATIVE=1
 run_menu() {
   if [ $NATIVE = 1 ]; then
     ( for i in $(seq 1 40); do sleep 0.25; swaymsg '[app_id="pocketmz-menu"] focus' >/dev/null 2>&1 && break; done ) &
-    PYSDL2_DLL_PATH=/usr/lib SDL_VIDEODRIVER=wayland python3 "$PMZ/pocketmz-launcher.py" "$L" > "$RZ/games/_menu.log" 2>&1
+    PYSDL2_DLL_PATH=/usr/lib SDL_VIDEODRIVER=wayland python3 "$PMZ/pocketmz-launcher.py" "$L" $LAUNCHER_ARGS > "$RZ/games/_menu.log" 2>&1
   else
     "$PMZ/pocketmz-run.sh" --menu
   fi

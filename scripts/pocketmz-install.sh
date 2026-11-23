@@ -46,12 +46,13 @@ ESCFG=/storage/.config/emulationstation
 if [ $ES = 1 ]; then
   cp "$RZ/es_systems_pocketmz.cfg" "$ESCFG/es_systems_pocketmz.cfg"
   mkdir -p /storage/.config/modules /storage/roms/rpgmz
-  for m in "PocketMZ.sh" "PocketMZ Settings.sh"; do
+  for m in "PocketMZ.sh"; do
     cp "$RZ/modules/$m" "/storage/.config/modules/$m"; chmod +x "/storage/.config/modules/$m"
   done
-  rm -f "/storage/.config/modules/Scan PocketMZ Games.sh"   # scanning is in PocketMZ Settings now
-  echo "ES system RPGMZ and Tools entries PocketMZ / PocketMZ Settings added (restart ES to see them)"
+  rm -f "/storage/.config/modules/Scan PocketMZ Games.sh" "/storage/.config/modules/PocketMZ Settings.sh"
+  echo "ES system RPGMZ and Tools entry PocketMZ added (restart ES to see them)"
 fi
+rm -f "$RZ/pocketmz-settings.py" "/storage/.config/modules/PocketMZ Settings.sh"
 # Add/update PocketMZ features in ES's es_features.cfg if present
 if [ -f "$RZ/es_features_pocketmz.cfg" ] && [ -d "$ESCFG" ]; then
   ESF="$ESCFG/es_features.cfg"

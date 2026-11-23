@@ -21,7 +21,8 @@ PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关
 ## 功能
 
 - **ES 集成与高级设置**：安装后在 EmulationStation 中出现「RPGMZ」系统（没有该系统时列在 Ports 中），并接入 ES「高级系统设置 / 高级游戏设置」（CPU/GPU 调速器、线程数、核心策略、渲染分辨率、平滑画面、自动保存/加载、画面帧率、显示帧数、运行时内核、运行时关闭 ES）。ES 选「自动」时沿用游戏自身设置；显式选择仅作用于当前会话并同步到 F2 菜单，不改写磁盘配置。
-- **按键与虚拟鼠标**：统一 α / β 手柄映射（支持 `pocketmz.gptk` 热重载，可在游戏内菜单单独设置）；右摇杆控制虚拟鼠标指针、L3/R3 模拟鼠标右键/左键，并在 F2 菜单提供鼠标速度（慢 / 标准 / 快）调节。
+- **游戏菜单与设置合二为一**：原生 SDL2 程序（`PocketMZ`），按 `Start` 打开设置（扫描游戏、默认设置、存档管理、更新/卸载），按 `Y` 可删除游戏（支持「删游戏保留存档」或「连存档彻底删除」，同时清理失效的 `.rpgmz` 映射）；全部存档直接保存在游戏卡 `/storage/roms/savestates/rpgmz/<游戏ID>/`。
+- **按键与虚拟鼠标**：独立由 ES 手柄配置（`es_input.cfg`）生成唯一手柄映射（不依赖 PortMaster），统一 α / β 按键；支持 `pocketmz.gptk` 热重载，右摇杆控制虚拟鼠标指针、L3/R3 模拟鼠标右键/左键，并在 F2 菜单提供鼠标速度（慢 / 标准 / 快）调节。
 - **热键**（按住 F2 再按）：
   - F2 + F1：PocketMZ 菜单
   - F2 + Start：退出游戏
@@ -98,7 +99,8 @@ PocketMZ is an unofficial project, not affiliated with KADOKAWA or Gotcha Gotcha
 **Features:**
 
 - EmulationStation integration ("RPGMZ" system, with Ports as a fallback) plus ES Advanced System/Game Options (`cpugovernor`, `gpuperf`, `threads`, `forcepack`, render scale, smooth bilinear filtering, auto save/load, FPS cap, FPS counter, runtime selector, stop ES). Choosing "Auto" in ES respects per-game settings; explicit choices apply to the session without overwriting disk configs.
-- Unified α/β controller mapping (`pocketmz.gptk` with 1s hot-reload and per-game key mapping) plus virtual mouse (right stick pointer, L3/R3 right/left click, configurable mouse speed in the F2 menu).
+- Unified PocketMZ game menu & settings (native SDL2): press `Start` for settings (scan games, defaults, saves, update/uninstall), press `Y` to delete a game (keep saves or delete everything, including stale `.rpgmz` launchers); all saves & rolling backups live on the game card at `/storage/roms/savestates/rpgmz/<id>/`.
+- Standalone α/β controller mapping generated directly from EmulationStation `es_input.cfg` (independent of PortMaster), `pocketmz.gptk` with 1s hot-reload and per-game key mapping, plus virtual mouse (right stick pointer, L3/R3 right/left click, configurable mouse speed in the F2 menu).
 - Hold-F2 hotkeys: menu (F1), quit (Start), title (Select), save and load screens (L3, R3), slow motion (L1), hold fast-forward (R1), pause (A), screenshot (X), FPS display (Y), volume (Up/Down).
 - In-game PocketMZ menu (F2 + F1): frame rate (30/60), speed, FPS display, volume, render scale, smooth filtering (live GPU `LINEAR`/`NEAREST`), auto save/load (`pmz-autosave.json` on quit/launch), runtime switch (NW.js / β / auto), close ES while playing, key mapping & mouse speed, one-time image precompile, save backups (rolling 5 backups before launch).
 - β runtime (Node 24 + `pmzrt`): lightweight browser-less runtime (Node 24 + custom N-API addon `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / 5.9 MB decode-only FFmpeg 7.1) shipped as an ~43 MB read-only overlay image (`beta-runtime.sqfs`, ~224 MB total bundle with the slimmed ~179 MB α image). Supports native Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` audio and `<video>` playback (`.mp4` / `.webm` fullscreen & WebGL texture upload). Uses ~150–280 MB less peak RAM and cold-boots in ~8–11s while sharing saves with NW.js.

@@ -42,13 +42,21 @@ do_mount() {
   mkdir -p "$RZ/home"
   is_mounted "$ROOT/root" || mount --bind "$RZ/home" "$ROOT/root"
   [ -n "$POCKETMZ_GAME" ] && bind_to "$POCKETMZ_GAME" game
+  if [ -n "$POCKETMZ_GAME" ] && [ -n "$POCKETMZ_SAVE_DIR" ]; then
+    mkdir -p "$POCKETMZ_SAVE_DIR" "$POCKETMZ_GAME/${POCKETMZ_WEB}save"
+    bind_to "$POCKETMZ_SAVE_DIR" "game/${POCKETMZ_WEB}save"
+  fi
+  if [ -n "$POCKETMZ_GAME" ] && [ -n "$POCKETMZ_BACKUP_DIR" ]; then
+    mkdir -p "$POCKETMZ_BACKUP_DIR" "$POCKETMZ_GAME/save-backups"
+    bind_to "$POCKETMZ_BACKUP_DIR" "game/save-backups"
+  fi
   [ -n "$POCKETMZ_SRC" ] && bind_to "$POCKETMZ_SRC" gamesrc ro
   return 0
 }
 
 do_umount() {
-  for r in "$RZ/root-sqfs" "$RZ/root-test" "$RZ/rootfs"; do
-    for d in root gamesrc game tmp run sys proc dev/shm dev/pts dev; do
+  for r in "$RZ/root-sqfs" "$RZ/root-test" "$RZ/rootfs" "$RZ/beta/rt" "$RZ/beta/root24" "$RZ/beta/root"; do
+    for d in game/www/save game/save game/save-backups root gamesrc game tmp run sys proc dev/shm dev/pts dev; do
       is_mounted "$r/$d" && umount -l "$r/$d"
     done
   done

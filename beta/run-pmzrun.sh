@@ -39,9 +39,12 @@ echo "cpu online: $(cat /sys/devices/system/cpu/online)"
 GP=/storage/pocketmz/pocketmz.gptk
 for g in pocketmz.gptk rpgmz.gptk; do [ -f $G/$g ] && { GP=$G/$g; break; }; done
 cp "$GP" /tmp/pmz-gptk
-# SDL gamecontroller mapping: pass PortMaster's gamecontrollerdb into chroot so A/B/X/Y match α's gptokeyb
+# SDL gamecontroller mapping: generate from ES es_input.cfg via pocketmz-pad.py so A/B/X/Y match ES/α
 GCDB="$SDL_GAMECONTROLLERCONFIG_FILE"
-[ -z "$GCDB" ] && [ -f /tmp/gamecontrollerdb.txt ] && GCDB=/tmp/gamecontrollerdb.txt
+if [ -z "$GCDB" ] || [ ! -f "$GCDB" ]; then
+  GCDB=$(python3 /storage/pocketmz/pocketmz-pad.py 2>/dev/null || true)
+fi
+[ -z "$GCDB" ] && [ -f /tmp/pmz-gamecontrollerdb.txt ] && GCDB=/tmp/pmz-gamecontrollerdb.txt
 [ -z "$GCDB" ] && [ -f /storage/.config/SDL-GameControllerDB/gamecontrollerdb.txt ] && GCDB=/storage/.config/SDL-GameControllerDB/gamecontrollerdb.txt
 if [ -n "$GCDB" ] && [ -f "$GCDB" ]; then
   case "$GCDB" in /tmp/*) ;; *) cp "$GCDB" /tmp/pmz-gcdb.txt && GCDB=/tmp/pmz-gcdb.txt ;; esac
@@ -71,6 +74,14 @@ if [ -z "$POCKETMZ_SMOOTH" ]; then
 fi
 export POCKETMZ_RENDER_SCALE POCKETMZ_IMG_SCALE POCKETMZ_IMG_CACHE POCKETMZ_WIN_SCALE POCKETMZ_GC POCKETMZ_SE_CACHE POCKETMZ_MAP_CACHE POCKETMZ_KEEP_IMAGES POCKETMZ_PRELOAD_SYSTEM POCKETMZ_TILE_ATLAS POCKETMZ_PRELOAD_FIX POCKETMZ_SMOOTH POCKETMZ_ES_RENDER_SCALE POCKETMZ_ES_SMOOTH POCKETMZ_ES_FPS POCKETMZ_ES_SHOW_FPS POCKETMZ_ES_RUNTIME POCKETMZ_ES_STOP_ES POCKETMZ_ES_AUTOSAVE
 export MODE=${MODE:-test}; TMO="timeout 75"; [ "$MODE" = play ] && TMO=""
+if [ "$MODE" = play ] && [ -z "$SAVE_DIR" ]; then
+  [ "$ENG" = MV ] && export POCKETMZ_WEB="www/" || export POCKETMZ_WEB=""
+  export POCKETMZ_SAVE_DIR="${POCKETMZ_SAVE_DIR:-/storage/roms/savestates/rpgmz/$ID/save}"
+  export POCKETMZ_BACKUP_DIR="${POCKETMZ_BACKUP_DIR:-/storage/roms/savestates/rpgmz/$ID/save-backups}"
+  mkdir -p "$POCKETMZ_SAVE_DIR" "$POCKETMZ_BACKUP_DIR"
+elif [ "$MODE" != play ]; then
+  export POCKETMZ_SAVE_DIR="" POCKETMZ_BACKUP_DIR="" POCKETMZ_WEB=""
+fi
 # audio: PMZ_VOLUME master knob (default 1.0), PMZ_AUDIO_DUMP=/opt/beta/shots/x.wav writes the mixed output (float32 WAV), PMZ_AUDIO=off = old silent stub
 [ -z "$PMZ_VOLUME" ] && export PMZ_VOLUME=1.0   # tests are audible too (user feedback); lower it explicitly if needed
 HK_PID=""

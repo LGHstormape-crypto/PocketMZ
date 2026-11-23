@@ -9,17 +9,20 @@
 #                                                settings and subset fonts stay)
 #        pocketmz-maint.sh find-package          newest pocketmz.tar found: "path<TAB>version"
 #        pocketmz-maint.sh update [package]      install that package (or the one found)
-#        pocketmz-maint.sh uninstall             pocketmz-uninstall.sh --yes (saves copied out first)
+#        pocketmz-maint.sh delete-game <id> <dir> <keep-saves|delete-all>
+#                                                remove original game, .rpgmz launcher, thin copy
+#        pocketmz-maint.sh uninstall             pocketmz-uninstall.sh --yes
 # Output: plain lines; the last line is "OK <message>" or "ERROR <message>".
 PMZ="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 RZ="${POCKETMZ_DATA:-/storage/pocketmz}"
+SAVE_BASE="${POCKETMZ_SAVE_BASE:-/storage/roms/savestates/rpgmz}"
 ok() { echo "OK $*"; exit 0; }
 fail() { echo "ERROR $*"; exit 1; }
 # messages in the system language (zh / ja / en)
 [ -z "$POCKETMZ_UI_LANG" ] && . /etc/profile >/dev/null 2>&1   # get_setting
 UL="${POCKETMZ_UI_LANG:-$(get_setting system.language 2>/dev/null)}"
 T() { case "$UL" in zh*) echo "$1" ;; ja*) echo "$2" ;; *) echo "$3" ;; esac; }
-running() { pidof nw >/dev/null 2>&1; }
+running() { pidof nw >/dev/null 2>&1 || pidof node >/dev/null 2>&1; }
 
 # where a downloaded / copied package may be
 PKG_PLACES="/storage/roms/ports/PocketMZ/pocketmz.tar /storage/downloads/pocketmz.tar /storage/roms/pocketmz.tar
@@ -45,7 +48,19 @@ case "$1" in
     echo "version=$(cat "$PMZ/VERSION" 2>/dev/null || echo ?)"
     echo "games=$(ls -1d "$RZ"/games/*/game 2>/dev/null | wc -l)"
     echo "launchers=$(ls -1 /storage/roms/rpgmz/*.rpgmz 2>/dev/null | wc -l)"
-    n=0; for g in "$RZ"/games/*/game; do for s in "$g/save" "$g/www/save"; do [ -n "$(ls -A "$s" 2>/dev/null)" ] && n=$((n + 1)); done; done
+    n=$(
+      {
+        for s in "$SAVE_BASE"/*/save; do
+          [ -d "$s" ] && [ -n "$(ls -A "$s" 2>/dev/null)" ] && basename "$(dirname "$s")"
+        done
+        for g in "$RZ"/games/*/game; do
+          id=$(basename "$(dirname "$g")")
+          for s in "$g/save" "$g/www/save"; do
+            [ -d "$s" ] && [ -n "$(ls -A "$s" 2>/dev/null)" ] && echo "$id"
+          done
+        done
+      } | sort -u | wc -l
+    )
     echo "withSaves=$n"
     echo "dataSize=$(du -sh "$RZ/games" 2>/dev/null | cut -f1)"
     echo "free=$(df -h /storage | awk 'NR==2{print $4}')"
@@ -54,12 +69,20 @@ case "$1" in
   export-saves)
     DEST="${2:-/storage/roms/pocketmz-saves/$(date +%Y%m%d-%H%M%S)}"
     n=0
+    for s in "$SAVE_BASE"/*/save; do
+      [ -d "$s" ] && [ -n "$(ls -A "$s" 2>/dev/null)" ] || continue
+      id=$(basename "$(dirname "$s")")
+      t=$(title_of "$id" | tr -d '/\\:*?"<>|' | cut -c1-40)
+      mkdir -p "$DEST/$id $t" && cp -r "$s/." "$DEST/$id $t/" && n=$((n + 1))
+    done
     for g in "$RZ"/games/*/game; do
       id=$(basename "$(dirname "$g")")
       for s in "$g/save" "$g/www/save"; do
-        [ -n "$(ls -A "$s" 2>/dev/null)" ] || continue
+        [ -d "$s" ] && [ -n "$(ls -A "$s" 2>/dev/null)" ] || continue
         t=$(title_of "$id" | tr -d '/\\:*?"<>|' | cut -c1-40)
-        mkdir -p "$DEST/$id $t" && cp -r "$s/." "$DEST/$id $t/" && n=$((n + 1))
+        if [ ! -d "$DEST/$id $t" ]; then
+          mkdir -p "$DEST/$id $t" && cp -r "$s/." "$DEST/$id $t/" && n=$((n + 1))
+        fi
       done
     done
     [ "$n" -gt 0 ] || ok "$(T "没有可导出的存档" "書き出すセーブがありません" "no saves to export")"
@@ -110,9 +133,57 @@ case "$1" in
     fi
     rm -rf "${NEW:?}"; fail "$(T "安装失败，详见 /storage/pocketmz-install.log" "インストールに失敗しました。/storage/pocketmz-install.log を参照" "install failed, see /storage/pocketmz-install.log")" ;;
 
+  delete-game)
+    running && fail "$(T "有游戏正在运行，请先退出" "ゲームが実行中です。先に終了してください" "a game is running")"
+    ID="$2"; GDIR="${3%/}"; SMODE="${4:-keep-saves}"
+    [ -n "$ID" ] || fail "$(T "缺少游戏 ID" "ゲーム ID がありません" "missing game id")"
+    case "$ID" in */*|*..*) fail "invalid id: $ID" ;; esac
+    case "$SMODE" in keep-saves|delete-all) ;; *) fail "invalid mode: $SMODE" ;; esac
+    if [ -n "$GDIR" ]; then
+      case "$GDIR" in
+        *..*) fail "invalid dir: $GDIR" ;;
+        /storage/roms/rpgmaker/*|/storage/roms/easyrpg/*) ;;
+        *) fail "$(T "拒绝删除非游戏目录：$GDIR" "対象外のフォルダは削除できません：$GDIR" "refusing to delete outside rpgmaker/easyrpg: $GDIR")" ;;
+      esac
+    fi
+    if [ "$SMODE" = keep-saves ]; then
+      for s in "$RZ/games/$ID/game/save" "$RZ/games/$ID/game/www/save"; do
+        if [ -d "$s" ] && [ -n "$(ls -A "$s" 2>/dev/null)" ]; then
+          mkdir -p "$SAVE_BASE/$ID/save"
+          for sf in "$s"/* "$s"/.[!.]*; do [ -e "$sf" ] && [ ! -e "$SAVE_BASE/$ID/save/$(basename "$sf")" ] && cp -r "$sf" "$SAVE_BASE/$ID/save/"; done
+        fi
+      done
+    else
+      rm -rf "${SAVE_BASE:?}/${ID:?}"
+    fi
+    # Remove .rpgmz launchers matching id or dir, plus legacy Ports entries
+    for lf in /storage/roms/rpgmz/*.rpgmz; do
+      [ -f "$lf" ] || continue
+      if grep -qxF "id=$ID" "$lf" 2>/dev/null || { [ -n "$GDIR" ] && grep -qxF "dir=$GDIR" "$lf" 2>/dev/null; }; then
+        rm -f "$lf"
+      fi
+    done
+    for pf in /storage/roms/ports/*.sh; do
+      [ -f "$pf" ] || continue
+      grep -q "^# pocketmz: $ID\$" "$pf" 2>/dev/null && rm -f "$pf"
+    done
+    if [ -n "$GDIR" ] && [ -d "$GDIR" ]; then
+      rm -rf "$GDIR"
+      parent=$(dirname "$GDIR")
+      case "$parent" in /storage/roms/rpgmaker/*) rmdir "$parent" 2>/dev/null || true ;; esac
+    fi
+    rm -rf "${RZ:?}/games/${ID:?}"
+    rm -f "$RZ/launcher/library/covers/${ID}-"*.png "$RZ/launcher/library/thumbs/${ID}-"*.png 2>/dev/null || true
+    curl -s -m 5 http://127.0.0.1:1234/reloadgames >/dev/null 2>&1 || true
+    if [ "$SMODE" = keep-saves ]; then
+      ok "$(T "已删除游戏与映射；存档保留在 roms/savestates/rpgmz/$ID/" "ゲームと項目を削除しました（セーブは roms/savestates/rpgmz/$ID/ に保持）" "deleted game; saves kept in roms/savestates/rpgmz/$ID/")"
+    else
+      ok "$(T "已彻底删除游戏、映射与全部存档" "ゲーム・項目・セーブをすべて削除しました" "deleted game, launcher, and saves")"
+    fi ;;
+
   uninstall)
     running && fail "$(T "有游戏正在运行，请先退出" "ゲームが実行中です。先に終了してください" "a game is running")"
-    "$PMZ/pocketmz-uninstall.sh" --yes > /storage/pocketmz-uninstall.log 2>&1 && ok "$(T "已卸载；存档保存在 /storage/pocketmz-saves-*" "削除しました。セーブは /storage/pocketmz-saves-* に残しています" "removed; saves kept in /storage/pocketmz-saves-*")"
+    "$PMZ/pocketmz-uninstall.sh" --yes > /storage/pocketmz-uninstall.log 2>&1 && ok "$(T "已卸载；存档保留在 $SAVE_BASE" "削除しました。セーブは $SAVE_BASE に残しています" "removed; saves kept in $SAVE_BASE")"
     fail "$(T "卸载失败，详见 /storage/pocketmz-uninstall.log" "削除に失敗しました。/storage/pocketmz-uninstall.log を参照" "see /storage/pocketmz-uninstall.log")" ;;
 
   *) sed -n '3,12p' "$0"; exit 1 ;;

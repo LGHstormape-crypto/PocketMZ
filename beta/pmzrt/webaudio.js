@@ -67,7 +67,7 @@ module.exports.create = function ({ pmz, log, warn, volume, dump, env }) {
     _relink() { if (this._started) pmz.auSrcLoop(this._id, this._loop ? 1 : 0, this._ls, this._le); }
     start(when, offset, duration) {
       if (this._started) throw new Error('InvalidStateError: start called more than once');
-      if (!this.buffer) throw new Error('InvalidStateError: no buffer');
+      if (!this.buffer) { this._started = true; return; }   // RPG Maker MV _onTouchStart unlocks audio with an empty buffer
       const ok = pmz.auStart(this._id, this.buffer._id, +when || 0, +offset || 0, duration === undefined ? -1 : +duration, this._loop ? 1 : 0, this._ls, this._le);
       if (!ok) return;
       this._started = true; playing.set(this._id, this);

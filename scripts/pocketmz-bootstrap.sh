@@ -31,7 +31,7 @@ if [ ! -x "$RZ/pocketmz-run.sh" ]; then
 fi
 case "${1:-menu}" in
   menu)     exec "$RZ/pocketmz-menu.sh" ;;
-  settings) exec "$RZ/pocketmz-settings.sh" ;;
+  settings) exec "$RZ/pocketmz-menu.sh" --settings ;;
   scan)     exec "$RZ/pocketmz-scan.sh" ;;
   run)      shift; exec "$RZ/pocketmz-run.sh" "$@" ;;
   *)        sed -n '6,10p' "$0"; exit 1 ;;

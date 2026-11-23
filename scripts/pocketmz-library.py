@@ -178,6 +178,43 @@ def main():
                 entry["cover2"] = cover(web, system, system.get("title2Name"), "titles2",
                                         os.path.join(OUT, "covers", gid + "-2.png"))
             games.append(entry)
+    # Also surface stale .rpgmz launchers whose original game folder is gone so the user can delete them cleanly
+    launch_dir = "/storage/roms/rpgmz"
+    seen_ids = {g["id"] for g in games}
+    if os.path.isdir(launch_dir):
+        for fn in sorted(os.listdir(launch_dir)):
+            if not fn.endswith(".rpgmz"):
+                continue
+            fpath = os.path.join(launch_dir, fn)
+            if not os.path.isfile(fpath):
+                continue
+            gdir, gid = "", ""
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as lf:
+                    for ln in lf:
+                        ln = ln.strip()
+                        if ln.startswith("dir="):
+                            gdir = ln[4:]
+                        elif ln.startswith("id="):
+                            gid = ln[3:]
+            except OSError:
+                continue
+            if gdir and os.path.isdir(gdir):
+                continue
+            if not gid:
+                gid = game_id(gdir) if gdir else os.path.splitext(fn)[0]
+            if gid in seen_ids:
+                continue
+            seen_ids.add(gid)
+            log = os.path.join(RZ, "games", gid, "run.log")
+            games.append({
+                "id": gid, "title": os.path.splitext(fn)[0], "kind": "missing",
+                "dir": gdir, "launcher": fpath, "root": "rpgmz", "category": "",
+                "folder": os.path.basename(gdir) if gdir else fn, "locale": "",
+                "width": 0, "height": 0,
+                "lastPlayed": int(os.path.getmtime(log)) if os.path.isfile(log) else 0,
+                "needsConversion": False, "missing": True,
+            })
     games.sort(key=lambda g: (g["category"], g["title"]))
     lib_file = os.path.join(OUT, "library.json")
     old = read_json(lib_file)
