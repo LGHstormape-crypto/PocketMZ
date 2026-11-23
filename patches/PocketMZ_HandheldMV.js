@@ -1148,4 +1148,23 @@
         if (smEnv === "1" || smEnv === "true" || smEnv === "on") window.PMZ_applySmooth(true);
         else if (smEnv === "0" || smEnv === "false" || smEnv === "off") window.PMZ_applySmooth(false);
     }
+
+    // 13. Mali fp16 precision fix for pixi-tilemap: MV's 2048x2048 tile atlas uses shiftU/V=1024
+    //     and aFrame inset eps=0.5 (e.g. 1071.5). Under PIXI v4's default mediump (fp16 on Mali),
+    //     values >1024 have ULP=1.0 so 1071.5 rounds up to 1072.0 (adjacent tile/transparent edge),
+    //     producing 1px dark vertical seams at tile borders (especially visible with NEAREST/smooth=0).
+    //     Prefix starts with "precision" so PIXI v4 setPrecision() does not prepend mediump after it.
+    if (window.PIXI && PIXI.tilemap && PIXI.tilemap.shaderGenerator &&
+        PIXI.tilemap.shaderGenerator.generateFragmentSrc && !PIXI.tilemap.shaderGenerator._pmzHighp) {
+        const sg = PIXI.tilemap.shaderGenerator;
+        sg._pmzHighp = true;
+        const _genFrag = sg.generateFragmentSrc;
+        sg.generateFragmentSrc = function(maxTextures, fragmentSrc) {
+            const src = _genFrag.call(this, maxTextures, fragmentSrc);
+            if (typeof src === "string" && !src.includes("GL_FRAGMENT_PRECISION_HIGH")) {
+                return "precision mediump float;\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#endif\n" + src;
+            }
+            return src;
+        };
+    }
 })();
