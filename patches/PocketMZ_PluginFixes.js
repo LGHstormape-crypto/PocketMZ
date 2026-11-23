@@ -437,4 +437,231 @@
             buffer.addLoadListener(() => buffer.destroy());    // the cache keeps the decoded PCM
         };
     }
+
+    // ---- ApngPicture / PixiApngAndGif (MZ; startup pre-decode OOM & canvas bloat) -
+    //   1) CachePolicy=2 decodes every registered APNG at Scene_Boot (e.g. 31 files,
+    //      795 frames, 485 MB raw RGBA -> >740 MB with per-frame <canvas> -> OOM).
+    //      Downgrade CachePolicy=2 -> 1 (on-demand cached) before cacheStartup fires.
+    //   2) PixiApngAndGif creates one <canvas> (Cairo surface) per frame via
+    //      BaseTexture.from(canvas) + putImageData(). On PIXI v5 with BufferResource,
+    //      intercept canvas/BaseTexture.from during decode to upload UPNG's Uint8Array
+    //      directly with zero <canvas> allocation, halving memory per APNG.
+    //   3) Bound _spriteCache with an off-screen LRU (<=3 sprites, <=48 MB RGBA),
+    //      skip caching huge (>48 MB) APNGs, stop tickers on removeApng, and free
+    //      backing buffers + tickers on destroyApng. POCKETMZ_APNG_FIX=off disables.
+    if (hasPlugin("ApngPicture") && window.SceneManager && SceneManager.setupApngLoaderIfNeed &&
+        String((window.process && process.env && process.env.POCKETMZ_APNG_FIX) || "on") !== "off") {
+        const MAX_CACHE_COUNT = 3;
+        const MAX_CACHE_BYTES = 48 * 1024 * 1024;
+
+        const apngBytes = sp => {
+            if (!sp || !sp.pixiApng || !sp.pixiApng.textures) return 0;
+            let total = 0;
+            for (const tx of sp.pixiApng.textures) {
+                const bt = tx && tx.baseTexture;
+                if (bt) total += (bt.realWidth || bt.width || 0) * (bt.realHeight || bt.height || 0) * 4;
+            }
+            return total;
+        };
+
+        const releaseApngSprite = sp => {
+            const pa = sp && sp.pixiApng;
+            if (!pa) return;
+            try { pa.stop(); } catch (e) {}
+            if (pa.ticker && typeof pa.ticker.destroy === "function") {
+                try { pa.ticker.destroy(); } catch (e) {}
+            }
+            const txs = pa.textures;
+            if (Array.isArray(txs)) {
+                for (const tx of txs) {
+                    if (!tx) continue;
+                    const bt = tx.baseTexture;
+                    if (bt) {
+                        const res = bt.resource;
+                        if (res) {
+                            if (res.data) res.data = null;
+                            if (res.source && res.source.tagName === "CANVAS") {
+                                res.source.width = 0;
+                                res.source.height = 0;
+                            }
+                        }
+                        try { bt.destroy(); } catch (e) {}
+                    }
+                    try { tx.destroy(); } catch (e) {}
+                }
+                pa.textures = [];
+            }
+        };
+
+        // 1. Zero-canvas BufferResource decode path (PIXI v5)
+        if (window.PixiApngAndGif && window.PIXI && PIXI.resources && PIXI.resources.BufferResource && PIXI.BaseTexture) {
+            const makeBufferBaseTexture = (u8, w, h) => {
+                const res = new PIXI.resources.BufferResource(u8, { width: w, height: h });
+                return new PIXI.BaseTexture(res, {
+                    width: w,
+                    height: h,
+                    scaleMode: PIXI.settings.SCALE_MODE,
+                    format: PIXI.FORMATS.RGBA,
+                    type: PIXI.TYPES.UNSIGNED_BYTE,
+                    alphaMode: PIXI.ALPHA_MODES.UNPACK,
+                });
+            };
+
+            const wrapDecode = (methodName, isGif) => {
+                const orig = PixiApngAndGif.prototype[methodName];
+                if (typeof orig !== "function") return;
+                PixiApngAndGif.prototype[methodName] = function() {
+                    const origCreateElement = document.createElement;
+                    const origFrom = PIXI.BaseTexture.from;
+                    document.createElement = function(tag) {
+                        if (String(tag).toLowerCase() !== "canvas") {
+                            return origCreateElement.apply(this, arguments);
+                        }
+                        const dummy = {
+                            tagName: "CANVAS",
+                            width: 0,
+                            height: 0,
+                            _pmzApngDummy: true,
+                            _bt: null,
+                            _rgba: null,
+                            getContext(type) {
+                                if (type !== "2d") return null;
+                                return {
+                                    createImageData(w, h) {
+                                        w = w | 0; h = h | 0;
+                                        if (isGif) return { width: w, height: h, data: new Uint8Array(w * h * 4) };
+                                        return { width: w, height: h, data: { _src: null, set(src) { this._src = src; } } };
+                                    },
+                                    putImageData(im) {
+                                        const raw = im && im.data && im.data._src ? im.data._src : (im && im.data);
+                                        if (!raw || !raw.buffer) return;
+                                        const u8 = raw instanceof Uint8Array && !(raw instanceof Uint8ClampedArray)
+                                            ? raw
+                                            : new Uint8Array(raw.buffer, raw.byteOffset || 0, raw.byteLength);
+                                        if (dummy._bt) {
+                                            const bt = dummy._bt;
+                                            bt.resource.data = u8;
+                                            const w = im.width | 0 || dummy.width | 0 || 1;
+                                            const h = im.height | 0 || dummy.height | 0 || 1;
+                                            if (bt.resource.width !== w || bt.resource.height !== h) {
+                                                bt.resource.width = w;
+                                                bt.resource.height = h;
+                                                if (typeof bt.setRealSize === "function") bt.setRealSize(w, h);
+                                            }
+                                            bt.update();
+                                        } else {
+                                            dummy._rgba = u8;
+                                        }
+                                    }
+                                };
+                            }
+                        };
+                        return dummy;
+                    };
+                    // Must be a regular function (PixiApngAndGif calls `new PIXI.BaseTexture.from(r)`).
+                    PIXI.BaseTexture.from = function(src) {
+                        if (src && src._pmzApngDummy) {
+                            const w = src.width | 0 || 1;
+                            const h = src.height | 0 || 1;
+                            const bt = makeBufferBaseTexture(src._rgba || new Uint8Array(4), w, h);
+                            src._bt = bt;
+                            return bt;
+                        }
+                        return origFrom.apply(this, arguments);
+                    };
+                    try {
+                        return orig.apply(this, arguments);
+                    } finally {
+                        document.createElement = origCreateElement;
+                        PIXI.BaseTexture.from = origFrom;
+                    }
+                };
+            };
+            wrapDecode("apngResourceToTextures", false);
+            wrapDecode("gifResourceToTextures", true);
+        }
+
+        // 2. Downgrade CachePolicy=2 -> 1 and enforce bounded LRU on cached sprites
+        const lruOrder = [];   // [{ loader, name, bytes }]
+        let lruBytes = 0;
+
+        const touchLru = (loader, name, sp) => {
+            const bytes = apngBytes(sp);
+            const idx = lruOrder.findIndex(e => e.loader === loader && e.name === name);
+            if (idx >= 0) {
+                lruBytes -= lruOrder[idx].bytes;
+                lruOrder.splice(idx, 1);
+            }
+            if (bytes > MAX_CACHE_BYTES) {
+                // Too large to keep cached (e.g. 170 MB cutscene): treat as uncached so destroyApng frees it
+                if (sp.pixiApngOption) sp.pixiApngOption.CachePolicy = 0;
+                delete loader._spriteCache[name];
+                return;
+            }
+            lruOrder.push({ loader, name, bytes });
+            lruBytes += bytes;
+            while (lruOrder.length > MAX_CACHE_COUNT || lruBytes > MAX_CACHE_BYTES) {
+                const evIdx = lruOrder.findIndex(e => {
+                    const cached = e.loader._spriteCache && e.loader._spriteCache[e.name];
+                    return !cached || !cached.parent;
+                });
+                if (evIdx < 0) break;   // all cached sprites are currently mounted on screen
+                const ev = lruOrder.splice(evIdx, 1)[0];
+                lruBytes -= ev.bytes;
+                const oldSp = ev.loader._spriteCache && ev.loader._spriteCache[ev.name];
+                if (oldSp) {
+                    delete ev.loader._spriteCache[ev.name];
+                    releaseApngSprite(oldSp);
+                }
+            }
+        };
+
+        const patchLoader = loader => {
+            if (!loader || loader._pmzPatched) return;
+            loader._pmzPatched = true;
+            if (loader._cachePolicy) {
+                for (const k of Object.keys(loader._cachePolicy)) {
+                    if (loader._cachePolicy[k] === 2) loader._cachePolicy[k] = 1;
+                }
+            }
+            const origCreate = loader.createSprite.bind(loader);
+            loader.createSprite = function(name) {
+                const sp = origCreate(name);
+                if (sp && this._isNeedCache(name) && this._spriteCache && this._spriteCache[name] === sp) {
+                    touchLru(this, name, sp);
+                }
+                return sp;
+            };
+        };
+
+        const origSetup = SceneManager.setupApngLoaderIfNeed;
+        SceneManager.setupApngLoaderIfNeed = function() {
+            const r = origSetup.apply(this, arguments);
+            patchLoader(this._apngLoaderPicture);
+            patchLoader(this._apngLoaderEnemy);
+            patchLoader(this._apngLoaderSideEnemy);
+            patchLoader(this._apngLoaderSystem);
+            return r;
+        };
+
+        // 3. Stop tickers on removeApng (for cached sprites) and release buffers on destroyApng
+        if (Sprite.prototype.removeApng) {
+            const origRemove = Sprite.prototype.removeApng;
+            Sprite.prototype.removeApng = function() {
+                const sp = this._apngSprite;
+                if (sp && sp.pixiApng) {
+                    try { sp.pixiApng.stop(); } catch (e) {}
+                }
+                return origRemove.apply(this, arguments);
+            };
+        }
+        if (Sprite.prototype.destroyApng) {
+            const origDestroy = Sprite.prototype.destroyApng;
+            Sprite.prototype.destroyApng = function() {
+                const sp = this._apngSprite;
+                origDestroy.apply(this, arguments);
+                if (sp) releaseApngSprite(sp);
+            };
+        }
+    }
 })();

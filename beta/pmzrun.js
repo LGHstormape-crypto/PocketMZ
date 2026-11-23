@@ -562,7 +562,25 @@ async function runScript(el) {
       fn.call(globalThis, patchWindow, require, patchProcess, nwShim); loadedPlugins.push(name);
     } else { vm.runInThisContext(code, { filename: file }); if (isPlugin) loadedPlugins.push(name); }
   }
-  catch (e) { if (isPlugin) failedPlugins.push(name + ': ' + (e && e.message)); else otherErrors.push('script ' + name + ': ' + (e && e.stack)); log("SCRIPT ERROR", name, String(e && e.message).slice(0, 200));
+  catch (e) {
+    if (isPlugin && e instanceof ReferenceError) {
+      const m = /^([A-Za-z_$][\w$]*) is not defined$/.exec(String(e.message || ''));
+      const re = m ? new RegExp('\\bfor\\s*\\(\\s*' + m[1] + '\\s+(in|of)\\b') : null;
+      if (re && re.test(code)) {
+        try {
+          const fixed = code.replace(re, 'for (let ' + m[1] + ' $1');
+          vm.runInThisContext(fixed, { filename: file });
+          loadedPlugins.push(name);
+          log('PATCHED plugin ' + name + ': added let to undeclared loop var ' + m[1]);
+          document.currentScript = null;
+          try { await afterScript(name); } catch (e2) { otherErrors.push('hook ' + name + ': ' + e2.stack); }
+          await new Promise(r => setImmediate(r));
+          fire(el, 'load');
+          return;
+        } catch (eRetry) { e = eRetry; }
+      }
+    }
+    if (isPlugin) failedPlugins.push(name + ': ' + (e && e.message)); else otherErrors.push('script ' + name + ': ' + (e && e.stack)); log("SCRIPT ERROR", name, String(e && e.message).slice(0, 200));
     if (!guardBooted && !GUARD_PLUGIN_OK.test(name)) guardFail((isPlugin ? 'plugin ' : 'script ') + name + ' failed: ' + String(e && e.message).slice(0, 150)); }
   finally { if (hideProc) globalThis.process = realProc; }
   document.currentScript = null;
