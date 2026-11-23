@@ -36,7 +36,7 @@ if [ "$FROM" != "$RZ" ]; then
   done
 fi
 chmod +x "$RZ"/*.sh "$RZ/gkd-thermal" 2>/dev/null || true
-[ -f "$RZ/beta-runtime.sqfs" ] && echo "β runtime (experimental) installed: set \"runtime\": \"beta\" or \"auto\" in settings.json / a game's pocketmz.json to use it (default: nw)"
+[ -f "$RZ/beta-runtime.sqfs" ] && echo "β runtime installed: default runtime is auto (falls back to nw when needed)"
 rm -f "$RZ/dev"                      # release mode: no debug REPL plugin in the games
 if [ "$(get_setting gpu.driver 2>/dev/null)" != panfrost ]; then
   echo "NOTE: set the GPU driver to panfrost (ES: System Settings -> GPU DRIVER) and reboot;"
@@ -51,6 +51,29 @@ if [ $ES = 1 ]; then
   done
   rm -f "/storage/.config/modules/Scan PocketMZ Games.sh"   # scanning is in PocketMZ Settings now
   echo "ES system RPGMZ and Tools entries PocketMZ / PocketMZ Settings added (restart ES to see them)"
+fi
+# Add/update PocketMZ features in ES's es_features.cfg if present
+if [ -f "$RZ/es_features_pocketmz.cfg" ] && [ -d "$ESCFG" ]; then
+  ESF="$ESCFG/es_features.cfg"
+  if [ -L "$ESF" ] && [ -f "$ESF" ]; then cp -fL "$ESF" "$ESF.tmp" && rm -f "$ESF" && mv -f "$ESF.tmp" "$ESF"; fi
+  if [ -f "$ESF" ]; then
+    awk -v blk="$RZ/es_features_pocketmz.cfg" '
+      BEGIN {
+        in_b=0
+        while ((getline line < blk) > 0) {
+          if (line ~ /<emulator name="pocketmz"/) in_b=1
+          if (in_b) { em = (em ? em "\n" : "") line }
+          if (in_b && line ~ /<\/emulator>/) break
+        }
+        close(blk)
+      }
+      /<emulator name="pocketmz"/ { skip=1; next }
+      skip && /<\/emulator>/ { skip=0; next }
+      skip { next }
+      /^<\/features>/ { if (em) print em }
+      { print }
+    ' "$ESF" > "$ESF.tmp" && mv -f "$ESF.tmp" "$ESF"
+  fi
 fi
 [ $MENU = 1 ] || "$RZ/pocketmz-scan.sh"   # --menu: games are started from the PocketMZ menu instead
 if [ $MENU = 1 ]; then echo "installed in $RZ. Put MV/MZ game folders in /storage/roms/rpgmaker; they show up in the PocketMZ menu."

@@ -37,7 +37,8 @@ function guardFail(reason) {
 }
 // Save directory (NW style: <game>/save/). Tests default to a temp dir and never touch the real one; SAVE_DIR overrides in both modes.
 const SAVE_DIR = (process.env.SAVE_DIR || (PLAY ? path.join(GAME, 'save') : '/tmp/pmz-save-test')).replace(/\/*$/, '/');
-const GPTK_FILE = process.env.PMZ_GPTK || '';       // button map (resolved by run-pmzrun.sh: game/pocketmz.gptk > games/<id>/{pocketmz,rpgmz}.gptk > pocketmz.gptk)
+const GPTK_FILE = process.env.PMZ_GPTK || '';       // fallback button map (per-game override > global default)
+const USER_GPTK = process.env.PMZ_USER_GPTK || '';  // live user button map in the thin copy (/game/pocketmz.gptk), edited by PocketMZ_Menu
 const pmz = require('/opt/beta/pmzrt/pmzrt.node');
 const webgl = require('/opt/beta/pmzrt/webgl.js');
 const nowMs = () => Number(proc.hrtime.bigint()) / 1e6;
@@ -136,7 +137,7 @@ const imageReg = new FinalizationRegistry(h => { acct.imageLive -= h.n; acct.ima
 // ---------- GL window + frame loop ----------
 const warned = new Set(), warnings = [], glMessages = [], frames = [];
 function warnOnce(m) { if (!warned.has(m)) { warned.add(m); warnings.push(m); log('WARN', m); } }
-let glInfo = null, mainGL = null, shotPending = null, shotInfo = null, lastFrameStart = 0, nextTickAt = 0;
+let glInfo = null, mainGL = null, mainCanvas = null, shotPending = null, shotInfo = null, lastFrameStart = 0, nextTickAt = 0, lastGameDrewAt = 0;
 const shotInfos = {};
 const timings = {};
 function initWindow() {
@@ -158,6 +159,7 @@ function createMainGL(canvas, attrs, probe) {
   });
   if (probe) return gl;
   mainGL = gl;
+  mainCanvas = canvas;
   log('WebGL context created for ' + canvas.width + 'x' + canvas.height + ' canvas, window ' + glInfo.drawableWidth + 'x' + glInfo.drawableHeight + ', attrs ' + JSON.stringify(attrs) + ', caps ' + JSON.stringify(gl.caps));
   return mainGL;
 }
@@ -173,6 +175,7 @@ function frameLoop() {
     // does. The run ends by itself (MAXSEC / timeout in run-pmzrun.sh).
     if (e.type === 'keydown' || e.type === 'buttondown' || e.type === 'controlleradded' || e.type === 'controllerremoved') log('input ignored ' + JSON.stringify(e));
   }
+  stepVirtualMouse(tStart);
   const fsVid = visibleFullscreenVideo();
   if (rafPending.size || fsVid) {
     if (!nextTickAt || tStart - nextTickAt > 50) nextTickAt = tStart;
@@ -182,8 +185,9 @@ function frameLoop() {
     for (const f of cbs) { try { f(ts); } catch (e) { otherErrors.push('raf: ' + e.stack); log('RAF ERROR', e && e.stack); } }
     let drew = !!(mainGL && mainGL._defaultFbDirty);
     if (fsVid && pmz.vidDrawFullscreen) { pmz.vidDrawFullscreen(fsVid._vidId, glInfo.drawableWidth, glInfo.drawableHeight); drew = true; }
+    if (drew) lastGameDrewAt = tStart;
     let ovSwapped = false;
-    try { ovSwapped = !!overlayFrame(drew); } catch (e) { if (!overlayFrame.failed) { overlayFrame.failed = 1; otherErrors.push('overlay: ' + e.stack); log('OVERLAY ERROR', e && e.stack); } }
+    try { ovSwapped = !!overlayFrame(drew, tStart); } catch (e) { if (!overlayFrame.failed) { overlayFrame.failed = 1; otherErrors.push('overlay: ' + e.stack); log('OVERLAY ERROR', e && e.stack); } }
     const tJs = nowMs();
     let tEnd = tJs;
     if (drew || ovSwapped) {
@@ -230,6 +234,15 @@ function fire(o, t, ev) {
   const h = o['on' + t]; if (typeof h === 'function') { try { h.call(o, ev); } catch (e) { otherErrors.push(t + ' handler: ' + e.stack); log('HANDLER ERR', t, String(e.stack).slice(0, 500)); } }
   for (const f of (listenersOf(o)[t] || []).slice()) { if (ev._stop) break; try { f.call(o, ev); } catch (e) { otherErrors.push(t + ' listener: ' + e.stack); log('LISTENER ERR', t, String(e.stack).slice(0, 500)); } }
 }
+function canvasScreenRect(c) {
+  const dw = (glInfo && glInfo.drawableWidth) || 640, dh = (glInfo && glInfo.drawableHeight) || 480;
+  const cw = (c && c.width) || (typeof Graphics !== 'undefined' && Graphics.width) || dw;
+  const ch = (c && c.height) || (typeof Graphics !== 'undefined' && Graphics.height) || dh;
+  const s = Math.min(dw / cw, dh / ch);
+  const w = Math.round(cw * s), h = Math.round(ch * s);
+  const left = Math.round((dw - w) / 2), top = Math.round((dh - h) / 2);
+  return { left, top, right: left + w, bottom: top + h, width: w, height: h };
+}
 const ids = {};
 class FakeElement {
   constructor(tag) {
@@ -257,12 +270,16 @@ class FakeElement {
   addEventListener(t, f) { addL(this, t, f); }
   removeEventListener(t, f) { remL(this, t, f); }
   dispatchEvent(ev) { fire(this, ev.type, ev); return true; }
-  getBoundingClientRect() { return { left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 }; }
+  getBoundingClientRect() { return this === mainCanvas ? canvasScreenRect(this) : { left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 }; }
   focus() {} blur() {} click() {} scrollIntoView() {}
   querySelector() { return null; } querySelectorAll() { return []; }
   // tree walk (MV Utils.canReadGameFiles() asks for the last <script>; _modifyExistingElements for '*')
   getElementsByTagName(tag) { const t = String(tag).toUpperCase(), r = []; const walk = n => { for (const c of n.children || []) { if (t === '*' || c.tagName === t) r.push(c); walk(c); } }; walk(this); return r; }
-  get offsetWidth() { return 640; } get offsetHeight() { return 480; } get clientWidth() { return 640; } get clientHeight() { return 480; }
+  get offsetLeft() { return this === mainCanvas ? canvasScreenRect(this).left : 0; }
+  get offsetTop() { return this === mainCanvas ? canvasScreenRect(this).top : 0; }
+  get offsetWidth() { return this === mainCanvas ? canvasScreenRect(this).width : 640; }
+  get offsetHeight() { return this === mainCanvas ? canvasScreenRect(this).height : 480; }
+  get clientWidth() { return this.offsetWidth; } get clientHeight() { return this.offsetHeight; }
 }
 // features β does not have (video, m4a): logged as "COMPAT <kind>: <detail>" (once per kind+detail), counted in the final summary and written to PMZ_COMPAT_FILE
 // (a launcher can read it to prefer NW.js for that game); the engine carries on (video = finished at once, m4a = missing audio file)
@@ -608,7 +625,8 @@ function makeFakeEffekseerContext() {
 const winListeners = {};
 function def(k, v) { Object.defineProperty(globalThis, k, { value: v, writable: true, configurable: true, enumerable: true }); }
 def('window', globalThis); def('self', globalThis); def('top', globalThis); def('parent', globalThis);
-def('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36', platform: 'Linux aarch64', language: 'ja', languages: ['ja'], maxTouchPoints: 0, hardwareConcurrency: 4, getGamepads: () => [], vendor: 'Google Inc.', mediaDevices: undefined });
+const navLang = proc.env.POCKETMZ_LANG || 'ja';
+def('navigator', { userAgent: 'Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36', platform: 'Linux aarch64', language: navLang, languages: [navLang], maxTouchPoints: 0, hardwareConcurrency: 4, getGamepads: () => [], vendor: 'Google Inc.', mediaDevices: undefined });
 def('location', { href: 'file://' + GAME + '/index.html', protocol: 'file:', host: '', hostname: '', pathname: GAME + '/index.html', search: '', hash: '', origin: 'file://', reload: noop });
 def('addEventListener', (t, f) => addL(winListeners, t, f)); def('removeEventListener', (t, f) => remL(winListeners, t, f));
 def('dispatchEvent', ev => { fire(winListeners, ev.type, ev); });
@@ -664,37 +682,53 @@ for (const k of ['Node', 'Element', 'Event', 'MouseEvent', 'KeyboardEvent', 'Tou
 // ---------- HTML overlay (PocketMZ_Menu layers) ----------
 // There is no DOM/CSS here: overlay.js draws what the menu builds (panel, fps box, toast, hint) onto a 640x480 canvas, which is rendered with PIXI on
 // top of the game after Graphics.render (window space -> game space: the game canvas is letterboxed into the window by webgl.js).
-let ov = null, ovTex = null, ovCont = null, ovSprite = null;
-function overlayFrame(gameDrew) {
+let ov = null, ovTex = null, ovCont = null, ovSprite = null, ovTexDirty = false;
+function overlayFrame(gameDrew, now) {
   if (typeof PIXI === 'undefined' || typeof Graphics === 'undefined') return false;
   if (MV ? !(Graphics._renderer && Graphics._renderer.gl) : !(Graphics.app && Graphics.app.renderer)) return false;   // MV: PIXI v4 Graphics._renderer (WebGLRenderer)
   if (!ov) {
     if (!gameDrew) return false;
-    ov = require('/opt/beta/overlay.js').create({ doc });
+    ov = require('/opt/beta/overlay.js').create({ doc, getCursor });
     ovTex = PIXI.Texture.from(ov.canvas); ovSprite = new PIXI.Sprite(ovTex); ovCont = new PIXI.Container(); ovCont.addChild(ovSprite);
     // warm-up at boot (invisible): texture allocation / first render of the overlay path cost ~0.7 s when the menu is opened for the first time
     const R0 = MV ? Graphics._renderer : Graphics.app.renderer, last0 = R0._lastObjectRendered; ovSprite.alpha = 0; ovTex.baseTexture.update();
     (MV ? PIXI.WebGLRenderer : PIXI.Renderer).prototype.render.call(R0, ovCont, undefined, false); R0._lastObjectRendered = last0; ovSprite.alpha = 1;
   }
   const st = ov.update();
+  if (st === 'draw') ovTexDirty = true;
   if (!gameDrew) {
-    // Only redraw + swap while the game is idle/paused when the overlay itself changed (menu open/move/close, toast)
-    if (st !== 'draw' && st !== 'hide') return false;
+    const forceRedraw = !!globalThis.PMZ_FORCE_REDRAW;
+    if (forceRedraw) globalThis.PMZ_FORCE_REDRAW = false;
+    // Redraw + swap while idle/paused when DOM overlay changed (menu/toast/fps), forced by async resmooth, or cursor moved while idle >120ms.
+    if (!forceRedraw && st !== 'draw' && st !== 'hide') return false;
+    if (!forceRedraw && !ov.domChanged && (now - lastGameDrewAt) <= 120) return false;
     const R = MV ? Graphics._renderer : Graphics.app.renderer, last = R._lastObjectRendered;
+    const curScene = typeof SceneManager !== 'undefined' && SceneManager._scene;
+    const canRedrawLast = last && (!curScene || last === curScene);
     const protoRender = (MV ? PIXI.WebGLRenderer : PIXI.Renderer).prototype.render;
-    if (last) { protoRender.call(R, last); R._lastObjectRendered = last; }
-    if (st === 'draw') {
-      ovTex.baseTexture.update();
+    if (canRedrawLast) {
+      try { protoRender.call(R, last); }
+      catch (e) {
+        if (MV && R.currentRenderer && R.currentRenderer.sprites) R.currentRenderer.currentIndex = 0;
+        log('overlay backdrop redraw skipped: ' + (e && e.message));
+      }
+      R._lastObjectRendered = last;
+    } else {
+      if (!ov.domChanged && !forceRedraw) return false;
+      pmz.glClearColor(0, 0, 0, 1); pmz.glClear(pmz.COLOR_BUFFER_BIT);
+    }
+    if (st === 'draw' || st === 'same') {
+      if (ovTexDirty) { ovTex.baseTexture.update(); ovTexDirty = false; }
       const gw = Graphics.width, gh = Graphics.height, s = Math.min(ov.W / gw, ov.H / gh);
       ovSprite.scale.set(1 / s); ovSprite.position.set(-(ov.W - gw * s) / 2 / s, -(ov.H - gh * s) / 2 / s);
       protoRender.call(R, ovCont, undefined, false);
-      R._lastObjectRendered = last;
+      R._lastObjectRendered = canRedrawLast ? last : null;
       overlayFrame.n = (overlayFrame.n || 0) + 1;
     }
     return true;
   }
   if (st !== 'draw' && st !== 'same') return false;
-  if (st === 'draw') ovTex.baseTexture.update();
+  if (ovTexDirty) { ovTex.baseTexture.update(); ovTexDirty = false; }
   const gw = Graphics.width, gh = Graphics.height, s = Math.min(ov.W / gw, ov.H / gh);
   ovSprite.scale.set(1 / s); ovSprite.position.set(-(ov.W - gw * s) / 2 / s, -(ov.H - gh * s) / 2 / s);
   const R = MV ? Graphics._renderer : Graphics.app.renderer, last = R._lastObjectRendered;
@@ -704,9 +738,10 @@ function overlayFrame(gameDrew) {
   return false;
 }
 
-// ---------- input: SDL events -> engine keyboard events ----------
-// Physical events (play mode) and scripted ones (tests) both go through handleInput(), which turns them into keydown/keyup events on
-// `document` (rmmz Input listens there). Pad buttons follow the gptk map used by the NW.js runtime (button -> key), keyboard keys pass through.
+// ---------- input: SDL events -> engine keyboard & virtual mouse events ----------
+// Physical events (play mode) and scripted ones (tests) both go through handleInput(), which turns them into keydown/keyup and
+// mousemove/mousedown/mouseup events on `document` / canvas (rmmz/rpg Input & TouchInput listen there).
+// Pad buttons follow the exact same gptk map as the NW.js runtime (live-reloaded when edited in PocketMZ_Menu).
 const INPUTLOG = proc.env.PMZ_INPUTLOG === '1';
 const JSKEY = { enter: 13, return: 13, esc: 27, escape: 27, shift: 16, ctrl: 17, alt: 18, space: 32, tab: 9, backspace: 8, pageup: 33, pagedown: 34, home: 36, end: 35,
   left: 37, up: 38, right: 39, down: 40, insert: 45, delete: 46 };
@@ -716,21 +751,190 @@ for (let i = 1; i <= 12; i++) JSKEY['f' + i] = 111 + i;
 const KEYNAME = { 13: 'Enter', 27: 'Escape', 16: 'Shift', 17: 'Control', 18: 'Alt', 32: ' ', 9: 'Tab', 8: 'Backspace', 33: 'PageUp', 34: 'PageDown', 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 45: 'Insert' };
 const GPTK_BTN = { a: 'a', b: 'b', x: 'x', y: 'y', back: 'back', start: 'start', l1: 'leftshoulder', r1: 'rightshoulder', l2: 'lefttrigger', r2: 'righttrigger', l3: 'leftstick', r3: 'rightstick',
   up: 'dpup', down: 'dpdown', left: 'dpleft', right: 'dpright' };
-const inputMap = {};   // SDL controller button/trigger name (or 'stick:up' ...) -> JS keyCode
+const DEFAULT_GPTK_TEXT = 'back = shift\nstart = esc\na = enter\nb = esc\nx = d\ny = shift\nl1 = pageup\nr1 = pagedown\nl2 = s\nr2 = a\nl3 = mouse_right\nr3 = mouse_left\nup = up\ndown = down\nleft = left\nright = right\nleft_analog_up = up\nleft_analog_down = down\nleft_analog_left = left\nleft_analog_right = right\nright_analog_up = mouse_movement_up\nright_analog_down = mouse_movement_down\nright_analog_left = mouse_movement_left\nright_analog_right = mouse_movement_right\ndeadzone_mode = scaled_radial\ndeadzone = 7200\ndeadzone_scale = 6\nmouse_scale = 5400\n';
+const inputMap = {};      // SDL controller button/trigger name (or 'stick:up' ...) -> JS keyCode
+const mouseBtnMap = {};   // SDL controller button/trigger name -> 'left' | 'right'
+const rightStickMap = {}; // 'up'|'down'|'left'|'right' -> JS keyCode (when rightStickMode === 'keys')
+let rightStickMode = 'mouse';   // 'mouse' | 'keys' | 'none'
+let mouseSpeedScale = 1.0;
+
 function loadGptk() {
-  let text = '';
-  try { text = fs.readFileSync(GPTK_FILE, 'utf8'); } catch (e) { log('INPUT: no gptk (' + GPTK_FILE + '), built-in default'); text = 'back = shift\nstart = esc\na = enter\nb = esc\nx = d\ny = shift\nl1 = pageup\nr1 = pagedown\nl2 = s\nr2 = a\nup = up\ndown = down\nleft = left\nright = right\nleft_analog_up = up\nleft_analog_down = down\nleft_analog_left = left\nleft_analog_right = right\n'; }
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*([a-z0-9_]+)\s*=\s*([a-z0-9_]+)\s*(#.*)?$/i.exec(line); if (!m) continue;
-    const k = JSKEY[m[2].toLowerCase()]; if (!k) continue;   // mouse_* etc.: ignored
-    const n = m[1].toLowerCase(), sa = /^left_analog_(up|down|left|right)$/.exec(n);
-    if (sa) inputMap['stick:' + sa[1]] = k; else if (GPTK_BTN[n]) inputMap[GPTK_BTN[n]] = k;
+  for (const k of Object.keys(inputMap)) delete inputMap[k];
+  for (const k of Object.keys(mouseBtnMap)) delete mouseBtnMap[k];
+  for (const k of Object.keys(rightStickMap)) delete rightStickMap[k];
+  rightStickMode = 'none';
+  mouseSpeedScale = 1.0;
+  let text = '', src = 'default';
+  if (USER_GPTK && fs.existsSync(USER_GPTK)) {
+    try { text = fs.readFileSync(USER_GPTK, 'utf8'); src = USER_GPTK; } catch (e) {}
   }
-  log('INPUT map (' + (GPTK_FILE || 'default') + '): ' + JSON.stringify(inputMap));
+  if (!text && GPTK_FILE) {
+    try { text = fs.readFileSync(GPTK_FILE, 'utf8'); src = GPTK_FILE; } catch (e) {}
+  }
+  if (!text) { log('INPUT: no gptk (' + (USER_GPTK || GPTK_FILE) + '), built-in default'); text = DEFAULT_GPTK_TEXT; }
+  const noKey = v => v === '\\"' || v === '"' || v === '' || v === 'nothing';
+  let sawRight = false;
+  for (const rawLine of text.split(/\r?\n/)) {
+    if (/^\s*[#;]/.test(rawLine)) continue;
+    const line = rawLine.replace(/\s+#.*$/, '');
+    const m = /^\s*([a-z0-9_]+)\s*=\s*(.*?)\s*$/i.exec(line); if (!m) continue;
+    const n = m[1].toLowerCase(), v = m[2].toLowerCase();
+    if (n === 'deadzone_scale') {
+      const ds = parseFloat(v);
+      if (isFinite(ds) && ds > 0) mouseSpeedScale = Math.max(0.3, Math.min(2.5, ds / 6));
+      continue;
+    }
+    if (n.startsWith('deadzone') || n === 'mouse_scale' || n === 'mouse_delay' || n === 'mouse_slow_scale' || n === 'dpad_mouse_step') continue;
+    const ra = /^right_analog_(up|down|left|right)$/.exec(n);
+    if (ra) {
+      sawRight = true;
+      if (v.startsWith('mouse_movement')) rightStickMode = 'mouse';
+      else if (noKey(v)) { if (rightStickMode !== 'mouse' && rightStickMode !== 'keys') rightStickMode = 'none'; }
+      else if (JSKEY[v]) { rightStickMode = 'keys'; rightStickMap[ra[1]] = JSKEY[v]; }
+      continue;
+    }
+    const sa = /^left_analog_(up|down|left|right)$/.exec(n);
+    if (sa) { if (!noKey(v) && JSKEY[v]) inputMap['stick:' + sa[1]] = JSKEY[v]; continue; }
+    const slot = GPTK_BTN[n];
+    if (!slot || noKey(v)) continue;
+    if (v === 'mouse_left') mouseBtnMap[slot] = 'left';
+    else if (v === 'mouse_right') mouseBtnMap[slot] = 'right';
+    else if (JSKEY[v]) inputMap[slot] = JSKEY[v];
+  }
+  if (!sawRight) rightStickMode = 'mouse';
+  log('INPUT map (' + src + '): keys=' + JSON.stringify(inputMap) + ' mouse=' + JSON.stringify(mouseBtnMap) + ' rstick=' + rightStickMode + ' mspeed=' + mouseSpeedScale.toFixed(2));
 }
+function gptkStamp() {
+  if (!USER_GPTK) return 'none';
+  try { const s = fs.statSync(USER_GPTK); return s.mtimeMs + ':' + s.size; } catch (e) { return 'none'; }
+}
+function watchUserGptk() {
+  if (!PLAY || !USER_GPTK) return;
+  let last = gptkStamp();
+  setInterval(() => {
+    const cur = gptkStamp();
+    if (cur === last) return;
+    last = cur;
+    releaseAllKeys();
+    releaseAllMouse();
+    loadGptk();
+  }, 1000).unref();
+}
+
 const keySources = new Map();   // keyCode -> Set of sources holding it (a key is down while any source holds it)
-let f2Held = false; const stick = { up: false, down: false, left: false, right: false }, trig = { lefttrigger: false, righttrigger: false };
-const inputStats = { keydown: 0, keyup: 0, swallowed: 0 };
+let f2Held = false;
+const stick = { up: false, down: false, left: false, right: false };
+const rstick = { up: false, down: false, left: false, right: false };
+const trig = { lefttrigger: false, righttrigger: false };
+const inputStats = { keydown: 0, keyup: 0, swallowed: 0, mousemove: 0, mousedown: 0, mouseup: 0 };
+const isMenuOpen = () => !!(ids.pmzMenu && !ids.pmzMenu.hidden);
+
+// ---------- virtual mouse (right stick + L3/R3 + physical USB/BT mouse) ----------
+const vmouse = {
+  x: 320, y: 240, rx: 0, ry: 0,
+  left: false, right: false,
+  btnSources: { left: new Set(), right: new Set() },
+  visibleUntil: 0, lastStep: 0, initedPos: false, lastIntX: -1, lastIntY: -1,
+};
+function mouseBounds() {
+  return mainCanvas ? canvasScreenRect(mainCanvas) : { left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 };
+}
+function ensureMousePos() {
+  const b = mouseBounds();
+  if (!vmouse.initedPos) {
+    vmouse.x = b.left + b.width / 2;
+    vmouse.y = b.top + b.height / 2;
+    vmouse.initedPos = true;
+  } else {
+    vmouse.x = Math.max(b.left, Math.min(b.right - 1, vmouse.x));
+    vmouse.y = Math.max(b.top, Math.min(b.bottom - 1, vmouse.y));
+  }
+}
+function fireMouse(type, btn, extra) {
+  const x = Math.round(vmouse.x), y = Math.round(vmouse.y);
+  const buttons = (vmouse.left ? 1 : 0) | (vmouse.right ? 2 : 0);
+  const target = mainCanvas || doc;
+  const ev = Object.assign({
+    type, target, currentTarget: target,
+    clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y,
+    offsetX: mainCanvas ? x - mainCanvas.offsetLeft : x,
+    offsetY: mainCanvas ? y - mainCanvas.offsetTop : y,
+    button: btn, buttons, which: btn === 0 ? 1 : btn === 2 ? 3 : 0,
+    ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
+    defaultPrevented: false, _stop: false, _stopProp: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this._stopProp = true; },
+    stopImmediatePropagation() { this._stop = true; this._stopProp = true; },
+  }, extra);
+  if (type in inputStats) inputStats[type]++;
+  if (mainCanvas) fire(mainCanvas, type, ev);
+  if (!ev._stopProp) fire(doc, type, ev);
+  if (!ev._stopProp) fire(winListeners, type, ev);
+}
+function moveMouseTo(nx, ny, now, forceFire) {
+  const b = mouseBounds();
+  vmouse.initedPos = true;
+  vmouse.x = Math.max(b.left, Math.min(b.right - 1, nx));
+  vmouse.y = Math.max(b.top, Math.min(b.bottom - 1, ny));
+  vmouse.visibleUntil = now + 3000;
+  const ix = Math.round(vmouse.x), iy = Math.round(vmouse.y);
+  if (forceFire || ix !== vmouse.lastIntX || iy !== vmouse.lastIntY) {
+    vmouse.lastIntX = ix; vmouse.lastIntY = iy;
+    fireMouse('mousemove', 0);
+  }
+}
+function mousePress(src, which) {
+  if (isMenuOpen()) return;
+  const s = vmouse.btnSources[which]; if (!s) return;
+  const first = s.size === 0; s.add(src);
+  if (!first) return;
+  ensureMousePos();
+  const now = nowMs();
+  vmouse.visibleUntil = now + 3000;
+  vmouse[which] = true;
+  fireMouse('mousemove', 0);
+  fireMouse('mousedown', which === 'left' ? 0 : 2);
+}
+function mouseRelease(src, which) {
+  const s = vmouse.btnSources[which]; if (!s || !s.delete(src)) return;
+  if (s.size > 0) return;
+  if (!vmouse[which]) return;
+  vmouse[which] = false;
+  vmouse.visibleUntil = nowMs() + 3000;
+  fireMouse('mouseup', which === 'left' ? 0 : 2);
+}
+function releaseAllMouse() {
+  for (const which of ['left', 'right']) {
+    const s = vmouse.btnSources[which];
+    if (s.size || vmouse[which]) {
+      s.clear();
+      if (vmouse[which]) { vmouse[which] = false; fireMouse('mouseup', which === 'left' ? 0 : 2); }
+    }
+  }
+}
+function stepVirtualMouse(now) {
+  const dt = vmouse.lastStep ? Math.min(0.05, Math.max(0, (now - vmouse.lastStep) / 1000)) : 0;
+  vmouse.lastStep = now;
+  if (isMenuOpen()) {
+    if (vmouse.left || vmouse.right) releaseAllMouse();
+    return;
+  }
+  if (rightStickMode !== 'mouse' || f2Held || dt <= 0) return;
+  const nx = vmouse.rx / 32767, ny = vmouse.ry / 32767;
+  const mag = Math.hypot(nx, ny);
+  const DZ = 0.22;
+  if (mag <= DZ) return;
+  ensureMousePos();
+  const t = Math.min(1, (mag - DZ) / (1 - DZ));
+  const speed = (55 + 305 * t * t) * mouseSpeedScale;   // ~360 px/s at normal (scaled by deadzone_scale/6)
+  moveMouseTo(vmouse.x + (nx / mag) * speed * dt, vmouse.y + (ny / mag) * speed * dt, now, false);
+}
+function getCursor() {
+  if (isMenuOpen() || nowMs() > vmouse.visibleUntil) return null;
+  ensureMousePos();
+  return { x: Math.round(vmouse.x), y: Math.round(vmouse.y), down: vmouse.left || vmouse.right };
+}
+
 function fireKey(type, code) {
   const ev = { keyCode: code, which: code, key: KEYNAME[code] || String.fromCharCode(code).toLowerCase(), code: '', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, repeat: false, preventDefault: noop, stopPropagation: noop };
   ev._stop = false; ev.stopImmediatePropagation = () => { ev._stop = true; };
@@ -741,6 +945,12 @@ function fireKey(type, code) {
 function keyPress(src, code) { let s = keySources.get(code); if (!s) keySources.set(code, s = new Set()); const first = s.size === 0; s.add(src); if (first) fireKey('keydown', code); }
 function keyRelease(src, code) { const s = keySources.get(code); if (!s || !s.delete(src)) return; if (s.size === 0) fireKey('keyup', code); }
 function releaseAllKeys() { for (const [code, s] of keySources) if (s.size) { s.clear(); fireKey('keyup', code); } }
+function handleMapped(slot, down) {
+  const k = inputMap[slot];
+  if (k) { (down ? keyPress : keyRelease)('btn:' + slot, k); return; }
+  const mb = mouseBtnMap[slot];
+  if (mb) (down ? mousePress : mouseRelease)('btn:' + slot, mb);
+}
 function sdlKeyToJs(sym) {
   if (sym >= 97 && sym <= 122) return sym - 32; if (sym >= 48 && sym <= 57) return sym;
   const t = { 13: 13, 27: 27, 32: 32, 8: 8, 9: 9, 0x40000052: 38, 0x40000051: 40, 0x40000050: 37, 0x4000004F: 39, 0x4000004B: 33, 0x4000004E: 34, 0x400000E1: 16, 0x400000E5: 16, 0x400000E0: 17, 0x400000E4: 17, 0x400000E2: 18, 0x400000E6: 18, 0x40000049: 45, 0x4000004A: 36, 0x4000004D: 35 };
@@ -750,7 +960,7 @@ function sdlKeyToJs(sym) {
 }
 function setF2(down) {
   if (down === f2Held) return; f2Held = down;
-  if (down) releaseAllKeys();   // the game must not see anything while F2 is held (F2+A is a hotkey, not OK)
+  if (down) { releaseAllKeys(); releaseAllMouse(); }   // the game must not see anything while F2 is held (F2+A is a hotkey, not OK)
 }
 function quitCombo() { if (PLAY && !NOQUIT) requestQuit('F2+Start'); else log('INPUT: F2+Start (ignored in ' + (PLAY ? 'PMZ_NOQUIT' : 'test') + ' mode)'); }
 function handleInput(e) {
@@ -761,22 +971,51 @@ function handleInput(e) {
       const down = e.type === 'buttondown', b = e.button;
       if (b === 'guide') return setF2(down);                         // F2 = SDL "guide" (gptokeyb -hotkey guide)
       if (f2Held) { if (down && b === 'start') quitCombo(); inputStats.swallowed++; return; }
-      const k = inputMap[b]; if (k) (down ? keyPress : keyRelease)('btn:' + b, k);
+      handleMapped(b, down);
       return; }
     case 'axis': {
       const v = e.value, a = e.axis;
       if (a === 'lefttrigger' || a === 'righttrigger') {
         const on = trig[a] ? v > 8000 : v > 16000; if (on === trig[a]) return; trig[a] = on;
         if (f2Held) { inputStats.swallowed++; return; }
-        const k = inputMap[a]; if (k) (on ? keyPress : keyRelease)('btn:' + a, k); return;
+        handleMapped(a, on); return;
       }
-      if (a !== 'leftx' && a !== 'lefty') return;
-      const neg = a === 'leftx' ? 'left' : 'up', pos = a === 'leftx' ? 'right' : 'down';   // dead zone: on at 50 %, off at 35 % (hysteresis)
-      for (const [dir, active] of [[neg, v < -(stick[neg] ? 11500 : 16384)], [pos, v > (stick[pos] ? 11500 : 16384)]]) {
-        if (active === stick[dir]) continue; stick[dir] = active;
-        if (f2Held) continue;
-        const k = inputMap['stick:' + dir]; if (k) (active ? keyPress : keyRelease)('stick:' + dir, k);
+      if (a === 'leftx' || a === 'lefty') {
+        const neg = a === 'leftx' ? 'left' : 'up', pos = a === 'leftx' ? 'right' : 'down';   // dead zone: on at 50 %, off at 35 % (hysteresis)
+        for (const [dir, active] of [[neg, v < -(stick[neg] ? 11500 : 16384)], [pos, v > (stick[pos] ? 11500 : 16384)]]) {
+          if (active === stick[dir]) continue; stick[dir] = active;
+          if (f2Held) continue;
+          const k = inputMap['stick:' + dir]; if (k) (active ? keyPress : keyRelease)('stick:' + dir, k);
+        }
+        return;
       }
+      if (a === 'rightx' || a === 'righty') {
+        if (a === 'rightx') vmouse.rx = v; else vmouse.ry = v;
+        if (rightStickMode === 'keys') {
+          const neg = a === 'rightx' ? 'left' : 'up', pos = a === 'rightx' ? 'right' : 'down';
+          for (const [dir, active] of [[neg, v < -(rstick[neg] ? 11500 : 16384)], [pos, v > (rstick[pos] ? 11500 : 16384)]]) {
+            if (active === rstick[dir]) continue; rstick[dir] = active;
+            if (f2Held) continue;
+            const k = rightStickMap[dir]; if (k) (active ? keyPress : keyRelease)('rstick:' + dir, k);
+          }
+        }
+        return;
+      }
+      return; }
+    case 'mousemove': {
+      if (!f2Held && !isMenuOpen()) moveMouseTo(e.x, e.y, nowMs(), false);
+      return; }
+    case 'mousedown': case 'mouseup': {
+      const down = e.type === 'mousedown';
+      const which = e.button === 1 ? 'left' : e.button === 3 ? 'right' : null;
+      if (!which) return;
+      if (f2Held) { inputStats.swallowed++; return; }
+      if (down && !isMenuOpen()) moveMouseTo(e.x, e.y, nowMs(), false);
+      (down ? mousePress : mouseRelease)('sdlmouse:' + which, which);
+      return; }
+    case 'wheel': {
+      if (f2Held || isMenuOpen()) return;
+      fireMouse('wheel', 0, { deltaX: -(e.dx || 0) * 40, deltaY: -(e.dy || 0) * 40, wheelDelta: (e.dy || 0) * 120 });
       return; }
     case 'keydown': case 'keyup': {
       const down = e.type === 'keydown'; if (e.repeat) return;
@@ -839,6 +1078,7 @@ function patchStorage() {
 (async () => {
   await measure('bare_node');
   loadGptk();
+  watchUserGptk();
   initWindow();   // before shims are used by anything; process + this script only
   if (MV) await bootIndexHtml();   // MV: index.html lists every script (PIXI v4, rpg_*.js, plugins.js, main.js) and the font stylesheet
   else {

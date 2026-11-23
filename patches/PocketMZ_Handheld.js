@@ -211,18 +211,22 @@
         return loc.startsWith("ja") ? "画面フレームレート" : loc.startsWith("zh") ? "画面帧率" : "Frame Rate";
     };
     // default for games whose config has no choice yet: PocketMZ settings (POCKETMZ_DEFAULT_FPS)
+    // ES explicit override (POCKETMZ_ES_FPS) forces runtime fps without overwriting saved config.
     const DEFAULT_FPS = window.process && process.env && process.env.POCKETMZ_DEFAULT_FPS === "60" ? 60 : 30;
-    ConfigManager[FPS_KEY] = DEFAULT_FPS;
+    const ES_FPS = window.process && process.env && (process.env.POCKETMZ_ES_FPS === "60" ? 60 : process.env.POCKETMZ_ES_FPS === "30" ? 30 : 0);
+    ConfigManager[FPS_KEY] = ES_FPS || DEFAULT_FPS;
     const _makeData = ConfigManager.makeData;
     ConfigManager.makeData = function() {
         const config = _makeData.call(this);
-        config[FPS_KEY] = this[FPS_KEY];
+        config[FPS_KEY] = (ES_FPS && !this._gkdUserChangedFps && this._gkdSavedFrameRate) ? this._gkdSavedFrameRate : this[FPS_KEY];
         return config;
     };
     const _applyData = ConfigManager.applyData;
     ConfigManager.applyData = function(config) {
         _applyData.call(this, config);
-        this[FPS_KEY] = config[FPS_KEY] === 60 ? 60 : config[FPS_KEY] === 30 ? 30 : DEFAULT_FPS;
+        const savedFps = config[FPS_KEY] === 60 ? 60 : config[FPS_KEY] === 30 ? 30 : DEFAULT_FPS;
+        this._gkdSavedFrameRate = savedFps;
+        this[FPS_KEY] = ES_FPS || savedFps;
     };
     const _addGeneralOptions = Window_Options.prototype.addGeneralOptions;
     Window_Options.prototype.addGeneralOptions = function() {
@@ -253,6 +257,8 @@
     };
     Window_Options.prototype.gkdToggleFps = function() {
         ConfigManager[FPS_KEY] = ConfigManager[FPS_KEY] === 60 ? 30 : 60;
+        ConfigManager._gkdUserChangedFps = true;
+        ConfigManager._gkdSavedFrameRate = ConfigManager[FPS_KEY];
         this.redrawItem(this.findSymbol(FPS_KEY));
         this.playCursorSound();
     };
@@ -1618,7 +1624,7 @@
             for (let i = 0; i < Tilemap.Layer.MAX_GL_TEXTURES; i++) {
                 const baseTexture = new PIXI.BaseRenderTexture();
                 baseTexture.resize(16, 16);
-                baseTexture.scaleMode = PIXI.SCALE_MODES.NEAREST;
+                baseTexture.scaleMode = window.PMZ_SMOOTH === true ? PIXI.SCALE_MODES.LINEAR : PIXI.SCALE_MODES.NEAREST;
                 this._internalTextures.push(baseTexture);
             }
             this._pmzSlots = [];
@@ -1708,5 +1714,83 @@
                 catch (e2) { this._context = null; }
             }
         };
+    }
+
+    // 24. Smooth scaling (bilinear vs nearest-neighbor), driven by ES / PocketMZ Settings / F2 menu.
+    if (window.Bitmap && window.PIXI) {
+        const updateGlTex = (gl, bt, on) => {
+            if (!gl || !bt || !bt._glTextures) return;
+            const mag = on ? gl.LINEAR : gl.NEAREST;
+            const min = bt.mipmap ? (on ? gl.LINEAR_MIPMAP_LINEAR : gl.NEAREST_MIPMAP_LINEAR) : mag;
+            const prev = gl.getParameter(gl.TEXTURE_BINDING_2D);
+            for (const id of Object.keys(bt._glTextures)) {
+                const gt = bt._glTextures[id];
+                const raw = gt && gt.texture;
+                if (!raw) continue;
+                gl.bindTexture(gl.TEXTURE_2D, raw);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, min);
+            }
+            if (prev !== undefined) gl.bindTexture(gl.TEXTURE_2D, prev);
+        };
+        const bInit = Bitmap.prototype.initialize;
+        Bitmap.prototype.initialize = function() {
+            bInit.apply(this, arguments);
+            if (window.PMZ_SMOOTH !== undefined) {
+                this._smooth = !!window.PMZ_SMOOTH;
+                if (this._updateScaleMode) this._updateScaleMode();
+            }
+        };
+        const smDesc = Object.getOwnPropertyDescriptor(Bitmap.prototype, "smooth");
+        if (smDesc && smDesc.set) {
+            Object.defineProperty(Bitmap.prototype, "smooth", {
+                get: smDesc.get,
+                set: function(v) {
+                    const eff = window.PMZ_SMOOTH !== undefined ? !!window.PMZ_SMOOTH : !!v;
+                    smDesc.set.call(this, eff);
+                },
+                configurable: true
+            });
+        }
+        window.PMZ_applySmooth = function(on) {
+            on = !!on;
+            window.PMZ_SMOOTH = on;
+            const mode = on ? PIXI.SCALE_MODES.LINEAR : PIXI.SCALE_MODES.NEAREST;
+            if (PIXI.settings) PIXI.settings.SCALE_MODE = mode;
+            if (window.Graphics && Graphics._canvas && Graphics._canvas.style) {
+                Graphics._canvas.style.imageRendering = on ? "auto" : "pixelated";
+            }
+            const R = window.Graphics && Graphics.app && Graphics.app.renderer;
+            const gl = R && R.gl;
+            const seen = new Set();
+            const touchBt = bt => {
+                if (!bt || seen.has(bt)) return;
+                seen.add(bt);
+                bt.scaleMode = mode;
+                updateGlTex(gl, bt, on);
+            };
+            if (window.ImageManager && ImageManager._cache) {
+                for (const k of Object.keys(ImageManager._cache)) {
+                    const bmp = ImageManager._cache[k];
+                    if (bmp) { bmp._smooth = on; touchBt(bmp._baseTexture); }
+                }
+            }
+            const btc = PIXI.utils && PIXI.utils.BaseTextureCache;
+            if (btc) for (const k of Object.keys(btc)) touchBt(btc[k]);
+            if (R && R.texture && R.texture.managedTextures) {
+                for (const bt of R.texture.managedTextures) touchBt(bt);
+            }
+            if (window.Tilemap && Tilemap.Renderer) {
+                const tr = R && R.plugins && R.plugins.tilemap;
+                if (tr && tr._internalTextures) for (const bt of tr._internalTextures) touchBt(bt);
+            }
+            window.PMZ_FORCE_REDRAW = true;
+            if (window.PMZ_MENU && PMZ_MENU.state && PMZ_MENU.state().open && R && window.SceneManager && SceneManager._scene) {
+                try { R.render(SceneManager._scene); } catch (e) {}
+            }
+        };
+        const smEnv = String((window.process && process.env && process.env.POCKETMZ_SMOOTH) || "").toLowerCase();
+        if (smEnv === "1" || smEnv === "true" || smEnv === "on") window.PMZ_applySmooth(true);
+        else if (smEnv === "0" || smEnv === "false" || smEnv === "off") window.PMZ_applySmooth(false);
     }
 })();

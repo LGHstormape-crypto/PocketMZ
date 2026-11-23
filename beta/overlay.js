@@ -24,10 +24,10 @@ const text = el => { let t = el.textContent || ''; if (!t && el.children) t = el
 const cls = el => String(el.className || '').split(/\s+/);
 
 function create(opts) {
-  const { doc, W = 640, H = 480 } = opts;
+  const { doc, W = 640, H = 480, getCursor = null } = opts;
   const canvas = doc.createElement('canvas'); canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
-  let lastSig = null, visible = false;
+  let lastSig = null, lastDomSig = '', visible = false;
   ctx.font = '15px ' + FONT; ctx.fillStyle = 'rgba(0,0,0,0.01)'; ctx.textBaseline = 'middle'; for (const t of ['PocketMZ 菜单 メニュー 日本語 ←→↑↓ ‹ › ×1 fps', 'bold']) { ctx.font = (t === 'bold' ? 'bold 17px ' : '15px ') + FONT; ctx.fillText('PocketMZ 菜单 メニュー 日本語 ←→↑↓ ‹ › ×1 fps', 0, 20); } ctx.clearRect(0, 0, W, H);   // warm-up: first use of the CJK font costs ~0.7 s; do it at boot, not when the menu opens
 
   function wrap(ctx2, t, maxW) {   // character-level wrap (CJK friendly), keeps words together when a space is available
@@ -118,7 +118,29 @@ function create(opts) {
     ctx.restore();
   }
 
-  // Returns the canvas when something must be shown (and redraws it when the content changed), null when nothing is visible.
+  function drawCursor(cur) {
+    ctx.save();
+    ctx.translate(cur.x + 0.5, cur.y + 0.5);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, 17);
+    ctx.lineTo(4.5, 13);
+    ctx.lineTo(7.5, 19);
+    ctx.lineTo(10, 17.8);
+    ctx.lineTo(7, 11.8);
+    ctx.lineTo(12.5, 11.8);
+    ctx.closePath();
+    ctx.fillStyle = cur.down ? '#4f8cff' : '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const api = { canvas, update, W, H, domChanged: false };
+  // Returns 'draw' / 'same' / 'hide' / null. api.domChanged distinguishes DOM changes (menu/toast/fps) from cursor-only motion.
   function update() {
     const live = [];
     for (const el of doc.body.children) {
@@ -126,15 +148,26 @@ function create(opts) {
       if (el.id === 'pmzMenu') live.push({ el, menu: true });
       else { const css = parseCss(el.style && el.style.cssText); if (/fixed/.test(css.position || '')) live.push({ el, css }); }
     }
-    if (!live.length) { const was = visible; visible = false; lastSig = null; return was ? 'hide' : null; }
-    const sig = live.map(l => l.menu ? 'M' + JSON.stringify((function dump(e) { return [e.className, text(e), (e.children || []).map(dump)]; })(l.el)) : 'F' + text(l.el) + '|' + (l.el.style && l.el.style.cssText)).join('#');
+    const cur = getCursor ? getCursor() : null;
+    if (!live.length && !cur) {
+      const was = visible;
+      api.domChanged = !!lastDomSig;
+      visible = false; lastSig = null; lastDomSig = '';
+      return was ? 'hide' : null;
+    }
+    const domSig = live.map(l => l.menu ? 'M' + JSON.stringify((function dump(e) { return [e.className, text(e), (e.children || []).map(dump)]; })(l.el)) : 'F' + text(l.el) + '|' + (l.el.style && l.el.style.cssText)).join('#');
+    const curSig = cur ? (cur.x + ',' + cur.y + ',' + (cur.down ? 1 : 0)) : '';
+    const sig = domSig + '@@' + curSig;
+    api.domChanged = domSig !== lastDomSig;
     visible = true;
     if (sig === lastSig) return 'same';
     lastSig = sig;
+    lastDomSig = domSig;
     ctx.clearRect(0, 0, W, H);
     for (const l of live) { try { if (l.menu) menu(l.el); else fixedBox(l.el, l.css); } catch (e) { console.log('overlay draw error', e && e.stack); } }
+    if (cur) { try { drawCursor(cur); } catch (e) { console.log('overlay cursor error', e && e.stack); } }
     return 'draw';
   }
-  return { canvas, update, W, H };
+  return api;
 }
 module.exports = { create };

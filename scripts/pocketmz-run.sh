@@ -29,9 +29,13 @@ case "$SRC" in
     ID=$(sed -n 's/^id=//p' "$L" | head -1)
     [ -d "$SRC" ] || { echo "game folder not found: $SRC (launcher $L)" >&2; exit 1; } ;;
 esac
+[ -z "$L" ] && [ -n "$POCKETMZ_LAUNCHER" ] && L="$POCKETMZ_LAUNCHER"
+[ -n "$L" ] && export POCKETMZ_LAUNCHER="$L"
 [ -z "$ID" ] && ID=$("$PMZ/pocketmz-scan.sh" --id "$SRC")
 WEB=""; [ ! -f "$SRC/index.html" ] && [ -f "$SRC/www/index.html" ] && WEB="www/"
 LOG="$RZ/games/$ID/run.log"
+. /etc/profile >/dev/null 2>&1
+[ -f /etc/profile.d/099-freqfunctions ] && . /etc/profile.d/099-freqfunctions >/dev/null 2>&1
 # per-game settings: games/<id>/env (shell variables, e.g. POCKETMZ_MEM_MAX=700, POCKETMZ_EXTRA_ARGS=...),
 # games/<id>/pocketmz.gptk (button mapping instead of the default pocketmz.gptk)
 # exported (set -a): pocketmz-chroot.sh passes every exported POCKETMZ_* variable into the game
@@ -40,11 +44,67 @@ LOG="$RZ/games/$ID/run.log"
 for v in STOP_ES MEM_MAX MEM_HIGH SWAP_MAX SWAPPINESS EXTRA_ARGS JS_FLAGS RENDER_SCALE IMG_SCALE SUBSET_FONTS; do
   eval "[ -z \"\$POCKETMZ_$v\" ] && [ -n \"\$RPGMZ_$v\" ] && POCKETMZ_$v=\"\$RPGMZ_$v\""
 done
+# Query ES system.cfg ONLY at rpgmz["<game>.rpgmz"] / rpgmz levels so "auto" stays empty
+es_setting() {
+  local conf="${J_CONF:-/storage/.config/system/configs/system.cfg}"
+  [ -r "$conf" ] || return 0
+  GS_KEY="$1" GS_GAME="$(basename "${L:-}")" awk '
+    BEGIN {
+      k = ENVIRON["GS_KEY"]; g = ENVIRON["GS_GAME"]
+      if (g != "") key[++n] = "rpgmz[\"" g "\"]." k
+      key[++n] = "rpgmz." k
+      for (i = 1; i <= n; i++) len[i] = length(key[i]) + 1
+    }
+    {
+      for (i = 1; i <= n; i++)
+        if (!(i in val) && substr($0, 1, len[i]) == key[i] "=")
+          val[i] = substr($0, len[i] + 1)
+    }
+    END {
+      for (i = 1; i <= n; i++)
+        if (val[i] != "") { print val[i]; exit }
+    }' "$conf"
+}
 # global defaults from the PocketMZ settings ($RZ/settings.json, written by pocketmz-settings.py);
-# a game's own env file and its in-game menu choices win
+# ES explicit settings win over in-game pocketmz.json and settings.json; ES "auto" leaves them to the game.
 GSET="$RZ/settings.json"
 gset() { [ -f "$GSET" ] && grep -o "\"$1\": *[^,}]*" "$GSET" | head -1 | sed 's/.*: *//; s/"//g; s/ //g'; }
-# per game (in-game PocketMZ menu, saved in the thin copy's pocketmz.json) wins over the default
+if [ -z "$MENU" ]; then
+  ES_STOP=$(es_setting stop_es)
+  case "$ES_STOP" in
+    true|1|on) POCKETMZ_STOP_ES=1; export POCKETMZ_ES_STOP_ES=1 ;;
+    false|0|off) POCKETMZ_STOP_ES=0; export POCKETMZ_ES_STOP_ES=0 ;;
+  esac
+  ES_RS=$(es_setting render_scale)
+  case "$ES_RS" in
+    screen|auto) export POCKETMZ_RENDER_SCALE=auto POCKETMZ_ES_RENDER_SCALE=auto ;;
+    off|native) export POCKETMZ_RENDER_SCALE=off POCKETMZ_ES_RENDER_SCALE=off ;;
+  esac
+  ES_SM=$(es_setting smooth)
+  case "$ES_SM" in
+    true|1|on) export POCKETMZ_SMOOTH=1 POCKETMZ_ES_SMOOTH=1 ;;
+    false|0|off) export POCKETMZ_SMOOTH=0 POCKETMZ_ES_SMOOTH=0 ;;
+  esac
+  ES_FPS=$(es_setting fps_limit)
+  case "$ES_FPS" in
+    30|60) export POCKETMZ_DEFAULT_FPS="$ES_FPS" POCKETMZ_ES_FPS="$ES_FPS" ;;
+  esac
+  ES_SF=$(es_setting show_fps)
+  case "$ES_SF" in
+    true|1|on) export POCKETMZ_ES_SHOW_FPS=1 ;;
+    false|0|off) export POCKETMZ_ES_SHOW_FPS=0 ;;
+  esac
+  ES_RT=$(es_setting runtime)
+  case "$ES_RT" in
+    autopick|auto) export POCKETMZ_GAME_RUNTIME=auto POCKETMZ_ES_RUNTIME=auto ;;
+    beta|nw) export POCKETMZ_GAME_RUNTIME="$ES_RT" POCKETMZ_ES_RUNTIME="$ES_RT" ;;
+  esac
+  ES_AS=$(es_setting autosave)
+  case "$ES_AS" in
+    true|1|on) export POCKETMZ_ES_AUTOSAVE=1 ;;
+    false|0|off) export POCKETMZ_ES_AUTOSAVE=0 ;;
+  esac
+fi
 if [ -z "$POCKETMZ_STOP_ES" ] && [ -f "$RZ/games/$ID/game/pocketmz.json" ]; then
   case "$(grep -o '"stopES": *[a-z]*' "$RZ/games/$ID/game/pocketmz.json" | head -1 | sed 's/.*: *//')" in
     true) POCKETMZ_STOP_ES=1 ;; false) POCKETMZ_STOP_ES=0 ;;
@@ -52,12 +112,21 @@ if [ -z "$POCKETMZ_STOP_ES" ] && [ -f "$RZ/games/$ID/game/pocketmz.json" ]; then
 fi
 [ -z "$POCKETMZ_STOP_ES" ] && [ "$(gset stopES)" = true ] && POCKETMZ_STOP_ES=1
 [ -z "$POCKETMZ_RENDER_SCALE" ] && [ "$(gset renderScale)" = off ] && POCKETMZ_RENDER_SCALE=off
-export POCKETMZ_DEFAULT_FPS="$(gset defaultFps)"
+[ -z "$POCKETMZ_DEFAULT_FPS" ] && export POCKETMZ_DEFAULT_FPS="$(gset defaultFps)"
 GPTK_MAP="$PMZ/pocketmz.gptk"
 for g in pocketmz.gptk rpgmz.gptk; do [ -f "$RZ/games/$ID/$g" ] && { GPTK_MAP="$RZ/games/$ID/$g"; break; }; done
 [ -f "$RZ/stop-es" ] && POCKETMZ_STOP_ES=1   # dev hook: stop ES (A/B tests through the ES launch API)
 [ -n "$MENU" ] && POCKETMZ_STOP_ES=0          # the menu loop waits for each run
-. /etc/profile >/dev/null 2>&1
+
+# Smooth (bilinear filtering): ES explicit override > game pocketmz.json > PocketMZ settings.json
+if [ -z "$MENU" ] && [ -z "$POCKETMZ_SMOOTH" ]; then
+  SM=$(grep -o '"smooth": *[a-z]*' "$RZ/games/$ID/game/pocketmz.json" 2>/dev/null | head -1 | sed 's/.*: *//')
+  [ -z "$SM" ] && SM=$(gset smooth)
+  case "$SM" in
+    true|1|on) export POCKETMZ_SMOOTH=1 ;;
+    false|0|off) export POCKETMZ_SMOOTH=0 ;;
+  esac
+fi
 
 if [ "${POCKETMZ_STOP_ES:-0}" = 1 ] && [ -z "$POCKETMZ_DETACHED" ] && systemctl is-active essway | grep -qE "^(active|activating|reloading)$"; then
   # Leave ES's process tree (stopping ES would kill it), run as unit pocketmz-<id>.
@@ -66,6 +135,7 @@ if [ "${POCKETMZ_STOP_ES:-0}" = 1 ] && [ -z "$POCKETMZ_DETACHED" ] && systemctl 
     -E POCKETMZ_DETACHED=1 -E HOME="${HOME:-/storage}" -E LANG="${LANG:-C.UTF-8}" \
     -E XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}" -E WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}" \
     -E SWAYSOCK="${SWAYSOCK:-/var/run/0-runtime-dir/sway-ipc.0.sock}" \
+    -E POCKETMZ_LAUNCHER="$POCKETMZ_LAUNCHER" -E POCKETMZ_STOP_ES="$POCKETMZ_STOP_ES" \
     -E POCKETMZ_EXTRA_ARGS="$POCKETMZ_EXTRA_ARGS" -E POCKETMZ_MEM_MAX="$POCKETMZ_MEM_MAX" -E POCKETMZ_SWAP_MAX="$POCKETMZ_SWAP_MAX" \
     /bin/bash "$0" "$SRC" "$ID" && exit 0
   echo "systemd-run failed, running inside ES" >&2
@@ -86,17 +156,25 @@ GPU_DRV=$(get_setting gpu.driver 2>/dev/null)
 
 ts() { echo "[$(cut -d' ' -f1 /proc/uptime)] $*"; }
 
-# CPU/GPU performance while playing; restore the previous governors afterwards
+# CPU/GPU/threads/forcepack from ES rpgmz system/per-game setting (default performance when auto); restore afterwards
 CPU_GOV_FILE=/sys/devices/system/cpu/cpufreq/policy0/scaling_governor
 GPU_GOV_FILE=$(ls -d /sys/class/devfreq/*.gpu 2>/dev/null | head -1)/governor
 OLD_CPU_GOV=$(cat "$CPU_GOV_FILE" 2>/dev/null); OLD_GPU_GOV=$(cat "$GPU_GOV_FILE" 2>/dev/null)
+OLD_DMC_GOV=$([ -n "${DMC_FREQ:-}" ] && cat "${DMC_FREQ}/governor" 2>/dev/null || true)
 # Reclaim: prefer pushing cold anonymous memory into zram over dropping NW.js code pages,
 # which then have to be read back from the slow SD card (stutter, kswapd at 35 % CPU).
 OLD_SWAPPINESS=$(cat /proc/sys/vm/swappiness 2>/dev/null)
 cleanup() {
   [ -n "$OLD_SWAPPINESS" ] && echo "$OLD_SWAPPINESS" > /proc/sys/vm/swappiness 2>/dev/null
-  [ -n "$OLD_CPU_GOV" ] && echo "$OLD_CPU_GOV" > "$CPU_GOV_FILE" 2>/dev/null
+  if [ -n "$OLD_CPU_GOV" ]; then
+    command -v set_cpu_gov >/dev/null && set_cpu_gov "$OLD_CPU_GOV" || echo "$OLD_CPU_GOV" > "$CPU_GOV_FILE" 2>/dev/null
+  fi
+  [ -n "$OLD_DMC_GOV" ] && [ -n "${DMC_FREQ:-}" ] && echo "$OLD_DMC_GOV" > "${DMC_FREQ}/governor" 2>/dev/null
   [ -n "$OLD_GPU_GOV" ] && echo "$OLD_GPU_GOV" > "$GPU_GOV_FILE" 2>/dev/null
+  SYS_THREADS=$(get_setting system.threads 2>/dev/null)
+  if command -v onlinethreads >/dev/null; then
+    [ -n "$SYS_THREADS" ] && [ "$SYS_THREADS" != default ] && onlinethreads "$SYS_THREADS" 0 2>/dev/null || onlinethreads all 1 2>/dev/null
+  fi
   [ -n "$OWN_THERMAL" ] && systemctl stop pocketmz-thermal
   [ -n "$POCKETMZ_DETACHED" ] && systemctl start essway
   ts "cleanup done"
@@ -107,8 +185,31 @@ if [ -n "$POCKETMZ_DETACHED" ]; then
   sleep 1                        # let ES finish returning from the port script
   systemctl stop essway && ts "ES stopped"
 fi
-echo performance > "$CPU_GOV_FILE" 2>/dev/null
-echo performance > "$GPU_GOV_FILE" 2>/dev/null
+ES_FORCEPACK=$(es_setting forcepack)
+case "$ES_FORCEPACK" in On|on|1|true) export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:+$PAN_MESA_DEBUG,}forcepack" ;; esac
+ES_THREADS=$(es_setting threads)
+if command -v onlinethreads >/dev/null; then
+  if [ -n "$ES_THREADS" ] && [ "$ES_THREADS" != default ] && [ "$ES_THREADS" != auto ]; then
+    onlinethreads "$ES_THREADS" 0
+  else
+    onlinethreads all 1
+  fi
+fi
+ES_CPUGOV=$(es_setting cpugovernor)
+case "$ES_CPUGOV" in ""|auto|default) ES_CPUGOV=performance ;; esac
+if command -v "$ES_CPUGOV" >/dev/null; then
+  "$ES_CPUGOV"
+else
+  echo "$ES_CPUGOV" > "$CPU_GOV_FILE" 2>/dev/null
+fi
+ES_GPUPERF=$(es_setting gpuperf)
+case "$ES_GPUPERF" in ""|auto|default) ES_GPUPERF=performance ;; esac
+if command -v gpu_performance_level >/dev/null; then
+  gpu_performance_level "$ES_GPUPERF"
+else
+  echo "$ES_GPUPERF" > "$GPU_GOV_FILE" 2>/dev/null
+fi
+echo "hw: cpu=${ES_CPUGOV} gpu=${ES_GPUPERF} threads=${ES_THREADS:-all} forcepack=${ES_FORCEPACK:-off} online=$(cat /sys/devices/system/cpu/online 2>/dev/null)"
 echo "${POCKETMZ_SWAPPINESS:-160}" > /proc/sys/vm/swappiness 2>/dev/null
 # Thermal guard: sustained load would reach the 95 C hardware shutdown (instant reset).
 # Use the system one when it runs, else run ours for the duration of the game.
@@ -157,9 +258,9 @@ if [ -z "$MENU" ] && [ -d "$SAVEDIR" ] && [ -n "$(ls -A "$SAVEDIR" 2>/dev/null)"
   fi
 fi
 
-# ---- runtime: nw (default) | beta | auto -------------------------------------------------------------
+# ---- runtime: auto (default) | beta | nw -------------------------------------------------------------
 # "runtime" in the thin copy's pocketmz.json (in-game menu file: F2 menu, item "运行时") wins over the global default in settings.json; POCKETMZ_GAME_RUNTIME (env / games/<id>/env) over both.
-# nw = NW.js (α, the default and the unchanged path below). beta = the browser-less runtime (beta/run-pmzrun.sh, MODE=play). auto = beta unless the game has a "β not OK" mark.
+# nw = NW.js (α, fallback/unchanged path below). beta = the browser-less runtime (beta/run-pmzrun.sh, MODE=play). auto = beta unless the game has a "β not OK" mark or β is not installed (default).
 # Mark: games/<id>/beta-status.json {"ok":false,"reason":..,"beta":<β build>,"game":<game fingerprint (SRCSIG)>,"time":..}; ignored when the β build or the game changed.
 # For auto the first launch of a game runs a static scan (pocketmz-betascan.sh: m4a/mp4/webm/gif, movies/, play-movie command, playVideo) and stores the result in the same file (ok:true = scanned, nothing found).
 # When β fails (exit 3 = its own boot / COMPAT check, or a crash in the first 45 s) the game is marked and started again on NW.js right here (falls through to the code below); a normal quit ends the script.
@@ -182,11 +283,11 @@ pmz_cgroup() {
     echo $$ > "$CG/cgroup.procs" && echo "cgroup $CG high=${MEM_HIGH}M max=${MEM_MAX}M swap=${SWAP_MAX}M"
   fi
 }
-RT=nw
+RT=auto
 if [ -z "$MENU" ]; then
   RT="${POCKETMZ_GAME_RUNTIME:-$(grep -o '"runtime": *"[a-z]*"' "$POCKETMZ_GAME/pocketmz.json" 2>/dev/null | head -1 | cut -d'"' -f4)}"
   [ -z "$RT" ] && RT=$(gset runtime)
-  case "$RT" in beta|auto) ;; *) RT=nw ;; esac
+  case "$RT" in nw|beta|auto) ;; *) RT=auto ;; esac
 fi
 BSTAT="$RZ/games/$ID/beta-status.json"
 bs_get() { [ -f "$BSTAT" ] && grep -o "\"$1\": *\"[^\"]*\"" "$BSTAT" | head -1 | cut -d'"' -f4; }
@@ -201,7 +302,7 @@ if [ "$RT" != nw ]; then
   if [ ! -x "$RZ/beta/run-pmzrun.sh" ] || [ -z "$BVER" ]; then echo "runtime $RT: β not installed, using NW.js"; RT=nw; fi
 fi
 # facts for the in-game menu's runtime item (the game's root does not see /storage): global default, β installed (image or dev overlay)
-case "$(gset runtime)" in nw|beta|auto) export POCKETMZ_RT_GLOBAL="$(gset runtime)" ;; *) export POCKETMZ_RT_GLOBAL=nw ;; esac
+case "$(gset runtime)" in nw|beta|auto) export POCKETMZ_RT_GLOBAL="$(gset runtime)" ;; *) export POCKETMZ_RT_GLOBAL=auto ;; esac
 if [ -x "$RZ/beta/run-pmzrun.sh" ] && { [ -f "$RZ/beta-runtime.sqfs" ] || [ -d "$RZ/beta/upper24" ]; }; then export POCKETMZ_BETA_INST=1; else export POCKETMZ_BETA_INST=0; fi
 if [ "$RT" = auto ]; then
   if [ "$(bs_get beta)" = "$BVER" ] && [ "$(bs_get game)" = "$SRCSIG" ]; then
@@ -216,8 +317,12 @@ if [ "$RT" != nw ]; then
   export POCKETMZ_RT_NOW=beta
   echo "runtime: β ($BVER) root: $("$RZ/beta/beta-mount.sh" "$PMZ_ROOTDIR" 2>/dev/null)"
   pmz_cgroup
-  # same start-up settings as the NW.js path: render scale from the in-game menu file, locale-independent TZ, 30 fps default (run-pmzrun.sh would use 60)
-  RS=$(grep -o '"renderScale": *"[a-z0-9.]*"' "$POCKETMZ_GAME/pocketmz.json" 2>/dev/null | head -1 | cut -d'"' -f4); [ -n "$RS" ] && export POCKETMZ_RENDER_SCALE="$RS"
+  # same start-up settings as the NW.js path: render scale from ES or in-game menu file, game locale, locale-independent TZ, 30 fps default (run-pmzrun.sh would use 60)
+  if [ -z "$POCKETMZ_ES_RENDER_SCALE" ]; then
+    RS=$(grep -o '"renderScale": *"[a-z0-9.]*"' "$POCKETMZ_GAME/pocketmz.json" 2>/dev/null | head -1 | cut -d'"' -f4); [ -n "$RS" ] && export POCKETMZ_RENDER_SCALE="$RS"
+  fi
+  GAME_LOCALE=$(grep -o '"locale" *: *"[^"]*"' "$POCKETMZ_GAME/${WEB}data/System.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
+  GAME_LOCALE="${GAME_LOCALE:-ja_JP}"; export POCKETMZ_LANG="${GAME_LOCALE%%_*}"
   export POCKETMZ_DEFAULT_FPS="${POCKETMZ_DEFAULT_FPS:-30}"
   TZ="${TZ:-$(get_setting system.timezone 2>/dev/null)}"; export TZ="${TZ:-UTC}"
   BFAIL=/tmp/pmz-beta-fail.txt; rm -f "$BFAIL" /tmp/pmz-beta-compat.txt
@@ -341,8 +446,8 @@ UI_LANG=$(get_setting system.language 2>/dev/null)
 export POCKETMZ_UI_LANG="${UI_LANG:-zh_CN}"                  # language of the PocketMZ menus
 TZ="${TZ:-$(get_setting system.timezone 2>/dev/null)}"; export TZ="${TZ:-UTC}"   # local time in the game (and backup names)
 [ -n "$MENU" ] && GAME_LOCALE="$UI_LANG"                     # the game menu page: system language
-# in-game PocketMZ menu settings that apply at start (pocketmz.json in the thin copy)
-if [ -z "$MENU" ] && [ -f "$POCKETMZ_GAME/pocketmz.json" ]; then
+# in-game PocketMZ menu settings that apply at start (pocketmz.json in the thin copy, unless forced by ES)
+if [ -z "$MENU" ] && [ -z "$POCKETMZ_ES_RENDER_SCALE" ] && [ -f "$POCKETMZ_GAME/pocketmz.json" ]; then
   RS=$(grep -o '"renderScale": *"[a-z0-9.]*"' "$POCKETMZ_GAME/pocketmz.json" | head -1 | cut -d'"' -f4)
   [ -n "$RS" ] && export POCKETMZ_RENDER_SCALE="$RS" && echo "render scale from menu settings: $RS"
 fi

@@ -34,16 +34,42 @@ mkdir -p $B/shots
 # ES blacks the screen when it sees no input and gkd-idle takes cores 1-3 offline after 30 min: run ES's own screensaver-stop scripts first (same as pocketmz-autotest.sh)
 if [ -f /run/gkd-idle.state ] || [ "$(cat /sys/class/backlight/*/bl_power 2>/dev/null | head -n1)" != 0 ]; then for f in /var/run/emulationstation/scripts/screensaver-stop/*; do [ -x "$f" ] && "$f" >/dev/null 2>&1; done; sleep 1; fi
 echo "cpu online: $(cat /sys/devices/system/cpu/online)"
-# button map: same lookup order as pocketmz-run.sh (user map in the thin copy > per-game override > default), copied to /tmp (visible in the chroot)
+# button map: same lookup order as pocketmz-run.sh (user map in the thin copy > per-game override > default).
+# Fallback goes to /tmp/pmz-gptk; PMZ_USER_GPTK points at the live thin-copy file so F2 menu edits take effect immediately.
 GP=/storage/pocketmz/pocketmz.gptk
 for g in pocketmz.gptk rpgmz.gptk; do [ -f $G/$g ] && { GP=$G/$g; break; }; done
-[ -f $G/game/pocketmz.gptk ] && GP=$G/game/pocketmz.gptk
 cp "$GP" /tmp/pmz-gptk
-# α's per-game settings reach the patches as process.env.POCKETMZ_*: same sources as pocketmz-run.sh (env file, in-game menu's pocketmz.json, system language)
+# SDL gamecontroller mapping: pass PortMaster's gamecontrollerdb into chroot so A/B/X/Y match α's gptokeyb
+GCDB="$SDL_GAMECONTROLLERCONFIG_FILE"
+[ -z "$GCDB" ] && [ -f /tmp/gamecontrollerdb.txt ] && GCDB=/tmp/gamecontrollerdb.txt
+[ -z "$GCDB" ] && [ -f /storage/.config/SDL-GameControllerDB/gamecontrollerdb.txt ] && GCDB=/storage/.config/SDL-GameControllerDB/gamecontrollerdb.txt
+if [ -n "$GCDB" ] && [ -f "$GCDB" ]; then
+  case "$GCDB" in /tmp/*) ;; *) cp "$GCDB" /tmp/pmz-gcdb.txt && GCDB=/tmp/pmz-gcdb.txt ;; esac
+elif [ -n "$SDL_GAMECONTROLLERCONFIG" ]; then
+  printf '%s\n' "$SDL_GAMECONTROLLERCONFIG" > /tmp/pmz-gcdb.txt && GCDB=/tmp/pmz-gcdb.txt
+else
+  GCDB=""
+fi
+export GCDB
+# α's per-game settings reach the patches as process.env.POCKETMZ_*: same sources as pocketmz-run.sh (env file, ES override, in-game menu's pocketmz.json, system language)
 [ -f $G/env ] && { set -a; . $G/env; set +a; }
-RS=$(grep -o '"renderScale": *"[a-z0-9.]*"' $G/game/pocketmz.json 2>/dev/null | head -1 | cut -d'"' -f4); [ -z "$POCKETMZ_RENDER_SCALE" ] && [ -n "$RS" ] && POCKETMZ_RENDER_SCALE=$RS
-. /etc/profile >/dev/null 2>&1; UI_LANG=$(get_setting system.language 2>/dev/null); export POCKETMZ_UI_LANG="${POCKETMZ_UI_LANG:-${UI_LANG:-zh_CN}}"
-export POCKETMZ_RENDER_SCALE POCKETMZ_IMG_SCALE POCKETMZ_IMG_CACHE POCKETMZ_WIN_SCALE POCKETMZ_GC POCKETMZ_SE_CACHE POCKETMZ_MAP_CACHE POCKETMZ_KEEP_IMAGES POCKETMZ_PRELOAD_SYSTEM POCKETMZ_TILE_ATLAS POCKETMZ_PRELOAD_FIX
+if [ -z "$POCKETMZ_ES_RENDER_SCALE" ]; then
+  RS=$(grep -o '"renderScale": *"[a-z0-9.]*"' $G/game/pocketmz.json 2>/dev/null | head -1 | cut -d'"' -f4); [ -n "$RS" ] && POCKETMZ_RENDER_SCALE=$RS
+fi
+if [ -z "$POCKETMZ_LANG" ]; then
+  WEB=""; [ "$ENG" = MV ] && WEB="www/"
+  GLOC=$(grep -o '"locale" *: *"[^"]*"' "$G/game/${WEB}data/System.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
+  POCKETMZ_LANG="${GLOC%%_*}"; POCKETMZ_LANG="${POCKETMZ_LANG:-ja}"
+fi
+. /etc/profile >/dev/null 2>&1; UI_LANG=$(get_setting system.language 2>/dev/null); export POCKETMZ_UI_LANG="${POCKETMZ_UI_LANG:-${UI_LANG:-zh_CN}}" POCKETMZ_LANG
+if [ -z "$POCKETMZ_SMOOTH" ]; then
+  SM=$(grep -o '"smooth": *[a-z]*' $G/game/pocketmz.json 2>/dev/null | head -1 | sed 's/.*: *//')
+  if [ -z "$SM" ] && [ -f /storage/pocketmz/settings.json ]; then
+    SM=$(grep -o '"smooth": *[a-z]*' /storage/pocketmz/settings.json 2>/dev/null | head -1 | sed 's/.*: *//')
+  fi
+  case "$SM" in true|1|on) POCKETMZ_SMOOTH=1 ;; false|0|off) POCKETMZ_SMOOTH=0 ;; esac
+fi
+export POCKETMZ_RENDER_SCALE POCKETMZ_IMG_SCALE POCKETMZ_IMG_CACHE POCKETMZ_WIN_SCALE POCKETMZ_GC POCKETMZ_SE_CACHE POCKETMZ_MAP_CACHE POCKETMZ_KEEP_IMAGES POCKETMZ_PRELOAD_SYSTEM POCKETMZ_TILE_ATLAS POCKETMZ_PRELOAD_FIX POCKETMZ_SMOOTH POCKETMZ_ES_RENDER_SCALE POCKETMZ_ES_SMOOTH POCKETMZ_ES_FPS POCKETMZ_ES_SHOW_FPS POCKETMZ_ES_RUNTIME POCKETMZ_ES_STOP_ES POCKETMZ_ES_AUTOSAVE
 export MODE=${MODE:-test}; TMO="timeout 75"; [ "$MODE" = play ] && TMO=""
 # audio: PMZ_VOLUME master knob (default 1.0), PMZ_AUDIO_DUMP=/opt/beta/shots/x.wav writes the mixed output (float32 WAV), PMZ_AUDIO=off = old silent stub
 [ -z "$PMZ_VOLUME" ] && export PMZ_VOLUME=1.0   # tests are audible too (user feedback); lower it explicitly if needed
@@ -104,7 +130,7 @@ $TMO unshare -m sh -c '
     [ -e "$HG/libGLESv2.so.2" ] && [ -z "$SDL_VIDEO_GL_DRIVER" ] && SDL_VIDEO_GL_DRIVER=/tmp/pmz-hostgl/libGLESv2.so.2
     HOSTGL_ENV="LD_LIBRARY_PATH=/tmp/pmz-hostgl${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
   fi
-  exec /storage/pocketmz/pocketmz-chroot.sh run /usr/bin/env $HOSTGL_ENV ${SDL_VIDEODRIVER:+SDL_VIDEODRIVER=$SDL_VIDEODRIVER} ${SDL_VIDEO_EGL_DRIVER:+SDL_VIDEO_EGL_DRIVER=$SDL_VIDEO_EGL_DRIVER} ${SDL_VIDEO_GL_DRIVER:+SDL_VIDEO_GL_DRIVER=$SDL_VIDEO_GL_DRIVER} PMZ_GLES=$PMZ_GLES PMZ_GPU_WORKAROUNDS=$PMZ_GPU_WORKAROUNDS mesa_glthread=${mesa_glthread:-false} MODE=$MODE OUT=$OUTV SAVE_DIR=$SAVE_DIR SAVETEST=$SAVETEST INPUTTEST=$INPUTTEST PMZ_PLAYSELFTEST=$PMZ_PLAYSELFTEST PMZ_VOLUME=$PMZ_VOLUME PMZ_AUDIO=$PMZ_AUDIO PMZ_AUDIO_DUMP=$PMZ_AUDIO_DUMP PMZ_AUDIO_RATE=$PMZ_AUDIO_RATE PMZ_AUDIO_BUF=$PMZ_AUDIO_BUF AUDIOTEST=$AUDIOTEST SDL_AUDIODRIVER=$SDL_AUDIODRIVER PMZ_INPUTLOG=$PMZ_INPUTLOG PMZ_GPTK=/tmp/pmz-gptk PMZ_PATCHES=${PMZ_PATCHES-Handheld,HandheldMV,PluginFixes,Menu} GAME=$GAME PMZ_NOQUIT=$PMZ_NOQUIT PMZ_GUARD=$PMZ_GUARD PMZ_GUARD_FORCE=$PMZ_GUARD_FORCE PMZ_GUARD_BOOT_SEC=$PMZ_GUARD_BOOT_SEC PMZ_FAIL_FILE=$PMZ_FAIL_FILE PMZ_COMPAT_FILE=$PMZ_COMPAT_FILE PMZ_GLOBAL_REQUIRE=$PMZ_GLOBAL_REQUIRE PMZ_EFFECT_ADD=$PMZ_EFFECT_ADD PMZ_EFFEKSEER=$PMZ_EFFEKSEER PMZ_BATTLE=$PMZ_BATTLE PMZ_FREEZE=$PMZ_FREEZE PMZ_TEXTPROF=$PMZ_TEXTPROF PMZ_MTEST=$PMZ_MTEST PMZ_PROFLOG=$PMZ_PROFLOG PMZ_BATTLE_REAL=$PMZ_BATTLE_REAL PMZ_BATTLE_SEC=$PMZ_BATTLE_SEC PMZ_TROOP=$PMZ_TROOP PMZ_ANIM=$PMZ_ANIM PMZ_BATTLE_SHOT=$PMZ_BATTLE_SHOT POCKETMZ_UI_LANG=$POCKETMZ_UI_LANG POCKETMZ_RT_NOW=$POCKETMZ_RT_NOW POCKETMZ_RT_GLOBAL=$POCKETMZ_RT_GLOBAL POCKETMZ_BETA_INST=$POCKETMZ_BETA_INST POCKETMZ_RENDER_SCALE=$POCKETMZ_RENDER_SCALE POCKETMZ_IMG_SCALE=$POCKETMZ_IMG_SCALE POCKETMZ_IMG_CACHE=$POCKETMZ_IMG_CACHE POCKETMZ_WIN_SCALE=$POCKETMZ_WIN_SCALE POCKETMZ_GC=$POCKETMZ_GC POCKETMZ_SE_CACHE=$POCKETMZ_SE_CACHE POCKETMZ_MAP_CACHE=$POCKETMZ_MAP_CACHE POCKETMZ_KEEP_IMAGES=$POCKETMZ_KEEP_IMAGES POCKETMZ_PRELOAD_SYSTEM=$POCKETMZ_PRELOAD_SYSTEM POCKETMZ_TILE_ATLAS=$POCKETMZ_TILE_ATLAS POCKETMZ_PRELOAD_FIX=$POCKETMZ_PRELOAD_FIX PMZ_ORPHAN=$PMZ_ORPHAN POCKETMZ_DEFAULT_FPS=${POCKETMZ_DEFAULT_FPS:-60} TOUCH=$POCKETMZ_TOUCH PMZ_GLDEBUG=$POCKETMZ_GLDEBUG PMZ_HINT=$PMZ_HINT PMZ_HINTMETRICS=$PMZ_HINTMETRICS PMZ_AA=$PMZ_AA PMZ_PROF=$PMZ_PROF PMZ_CPUPROF=$PMZ_CPUPROF PMZ_CPUPROF2=$PMZ_CPUPROF2 PMZ_CPUPROF3=$PMZ_CPUPROF3 PMZ_NOBLUR=$PMZ_NOBLUR PMZ_TEXT_TOL=$PMZ_TEXT_TOL SHOT2=${SHOT2:-} SHOT4=${SHOT4:-/opt/beta/shots/map-beta-play.png} MAPADV=${MAPADV:-0} TELEPORT=$TELEPORT SHOT5=${SHOT5:-/opt/beta/shots/map-beta-walk.png} SHOT3=${SHOT3:-/opt/beta/shots/map-beta.png} MAPHOLD=${MAPHOLD:-10000} SHOT=${SHOT:-/opt/beta/shots/title-beta.png} HOLD=$POCKETMZ_HOLD MAXSEC=$POCKETMZ_MAXSEC /usr/bin/node --max-old-space-size=256 --expose-gc ${PMZ_NODEFLAGS:---maglev} /opt/beta/pmzrun.js'
+  exec /storage/pocketmz/pocketmz-chroot.sh run /usr/bin/env $HOSTGL_ENV ${SDL_VIDEODRIVER:+SDL_VIDEODRIVER=$SDL_VIDEODRIVER} ${SDL_VIDEO_EGL_DRIVER:+SDL_VIDEO_EGL_DRIVER=$SDL_VIDEO_EGL_DRIVER} ${SDL_VIDEO_GL_DRIVER:+SDL_VIDEO_GL_DRIVER=$SDL_VIDEO_GL_DRIVER} ${GCDB:+SDL_GAMECONTROLLERCONFIG_FILE=$GCDB} PMZ_GLES=$PMZ_GLES PMZ_GPU_WORKAROUNDS=$PMZ_GPU_WORKAROUNDS mesa_glthread=${mesa_glthread:-false} MODE=$MODE OUT=$OUTV SAVE_DIR=$SAVE_DIR SAVETEST=$SAVETEST INPUTTEST=$INPUTTEST PMZ_PLAYSELFTEST=$PMZ_PLAYSELFTEST PMZ_VOLUME=$PMZ_VOLUME PMZ_AUDIO=$PMZ_AUDIO PMZ_AUDIO_DUMP=$PMZ_AUDIO_DUMP PMZ_AUDIO_RATE=$PMZ_AUDIO_RATE PMZ_AUDIO_BUF=$PMZ_AUDIO_BUF AUDIOTEST=$AUDIOTEST SDL_AUDIODRIVER=$SDL_AUDIODRIVER PMZ_INPUTLOG=$PMZ_INPUTLOG PMZ_GPTK=/tmp/pmz-gptk PMZ_USER_GPTK=/game/pocketmz.gptk PMZ_PATCHES=${PMZ_PATCHES-Handheld,HandheldMV,PluginFixes,Menu} GAME=$GAME PMZ_NOQUIT=$PMZ_NOQUIT PMZ_GUARD=$PMZ_GUARD PMZ_GUARD_FORCE=$PMZ_GUARD_FORCE PMZ_GUARD_BOOT_SEC=$PMZ_GUARD_BOOT_SEC PMZ_FAIL_FILE=$PMZ_FAIL_FILE PMZ_COMPAT_FILE=$PMZ_COMPAT_FILE PMZ_GLOBAL_REQUIRE=$PMZ_GLOBAL_REQUIRE PMZ_EFFECT_ADD=$PMZ_EFFECT_ADD PMZ_EFFEKSEER=$PMZ_EFFEKSEER PMZ_BATTLE=$PMZ_BATTLE PMZ_FREEZE=$PMZ_FREEZE PMZ_TEXTPROF=$PMZ_TEXTPROF PMZ_MTEST=$PMZ_MTEST PMZ_PROFLOG=$PMZ_PROFLOG PMZ_BATTLE_REAL=$PMZ_BATTLE_REAL PMZ_BATTLE_SEC=$PMZ_BATTLE_SEC PMZ_TROOP=$PMZ_TROOP PMZ_ANIM=$PMZ_ANIM PMZ_BATTLE_SHOT=$PMZ_BATTLE_SHOT POCKETMZ_UI_LANG=$POCKETMZ_UI_LANG POCKETMZ_LANG=$POCKETMZ_LANG POCKETMZ_SMOOTH=$POCKETMZ_SMOOTH POCKETMZ_RT_NOW=$POCKETMZ_RT_NOW POCKETMZ_RT_GLOBAL=$POCKETMZ_RT_GLOBAL POCKETMZ_BETA_INST=$POCKETMZ_BETA_INST POCKETMZ_RENDER_SCALE=$POCKETMZ_RENDER_SCALE POCKETMZ_ES_RENDER_SCALE=$POCKETMZ_ES_RENDER_SCALE POCKETMZ_ES_SMOOTH=$POCKETMZ_ES_SMOOTH POCKETMZ_ES_FPS=$POCKETMZ_ES_FPS POCKETMZ_ES_SHOW_FPS=$POCKETMZ_ES_SHOW_FPS POCKETMZ_ES_RUNTIME=$POCKETMZ_ES_RUNTIME POCKETMZ_ES_STOP_ES=$POCKETMZ_ES_STOP_ES POCKETMZ_ES_AUTOSAVE=$POCKETMZ_ES_AUTOSAVE POCKETMZ_IMG_SCALE=$POCKETMZ_IMG_SCALE POCKETMZ_IMG_CACHE=$POCKETMZ_IMG_CACHE POCKETMZ_WIN_SCALE=$POCKETMZ_WIN_SCALE POCKETMZ_GC=$POCKETMZ_GC POCKETMZ_SE_CACHE=$POCKETMZ_SE_CACHE POCKETMZ_MAP_CACHE=$POCKETMZ_MAP_CACHE POCKETMZ_KEEP_IMAGES=$POCKETMZ_KEEP_IMAGES POCKETMZ_PRELOAD_SYSTEM=$POCKETMZ_PRELOAD_SYSTEM POCKETMZ_TILE_ATLAS=$POCKETMZ_TILE_ATLAS POCKETMZ_PRELOAD_FIX=$POCKETMZ_PRELOAD_FIX PMZ_ORPHAN=$PMZ_ORPHAN POCKETMZ_DEFAULT_FPS=${POCKETMZ_DEFAULT_FPS:-60} TOUCH=$POCKETMZ_TOUCH PMZ_GLDEBUG=$POCKETMZ_GLDEBUG PMZ_HINT=$PMZ_HINT PMZ_HINTMETRICS=$PMZ_HINTMETRICS PMZ_AA=$PMZ_AA PMZ_PROF=$PMZ_PROF PMZ_CPUPROF=$PMZ_CPUPROF PMZ_CPUPROF2=$PMZ_CPUPROF2 PMZ_CPUPROF3=$PMZ_CPUPROF3 PMZ_NOBLUR=$PMZ_NOBLUR PMZ_TEXT_TOL=$PMZ_TEXT_TOL SHOT2=${SHOT2:-} SHOT4=${SHOT4:-/opt/beta/shots/map-beta-play.png} MAPADV=${MAPADV:-0} TELEPORT=$TELEPORT SHOT5=${SHOT5:-/opt/beta/shots/map-beta-walk.png} SHOT3=${SHOT3:-/opt/beta/shots/map-beta.png} MAPHOLD=${MAPHOLD:-10000} SHOT=${SHOT:-/opt/beta/shots/title-beta.png} HOLD=$POCKETMZ_HOLD MAXSEC=$POCKETMZ_MAXSEC /usr/bin/node --max-old-space-size=256 --expose-gc ${PMZ_NODEFLAGS:---maglev} /opt/beta/pmzrun.js'
 RC=$?
 [ -n "$HK_PID" ] && { kill $HK_PID 2>/dev/null; command -v set_kill >/dev/null && set_kill stop; }
 exit $RC

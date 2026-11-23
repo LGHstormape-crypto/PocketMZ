@@ -22,3 +22,7 @@ right_analog_up = mouse_movement_up
 right_analog_down = mouse_movement_down
 right_analog_left = mouse_movement_left
 right_analog_right = mouse_movement_right
+deadzone_mode = scaled_radial
+deadzone = 7200
+deadzone_scale = 6
+mouse_scale = 5400

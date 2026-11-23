@@ -59,6 +59,10 @@ static napi_value Init_(napi_env env, napi_callback_info info) {
   }
   SDL_SetHint("SDL_VIDEO_WAYLAND_WMCLASS", "pmzrt");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) return throw_sdl(env, "SDL_Init");
+  const char *gcdb = getenv("SDL_GAMECONTROLLERCONFIG_FILE");
+  if (gcdb && gcdb[0]) SDL_GameControllerAddMappingsFromFile(gcdb);
+  const char *gcfg = getenv("SDL_GAMECONTROLLERCONFIG");
+  if (gcfg && gcfg[0]) SDL_GameControllerAddMapping(gcfg);
   const char *gles_env = getenv("PMZ_GLES");
   int force_es2 = gles_env && gles_env[0] == '2';
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
@@ -89,7 +93,11 @@ static napi_value Init_(napi_env env, napi_callback_info info) {
   if (g_es3 && (!gl_ver || !strstr(gl_ver, "OpenGL ES 3."))) { g_es3 = 0; pmz_gl_load(0); }
   SDL_GL_SetSwapInterval(vsync ? 1 : 0);
   int nj = SDL_NumJoysticks();
-  for (int i = 0; i < nj; i++) if (SDL_IsGameController(i)) SDL_GameControllerOpen(i);
+  char *gc_map = NULL;
+  for (int i = 0; i < nj; i++) if (SDL_IsGameController(i)) {
+    SDL_GameController *c = SDL_GameControllerOpen(i);
+    if (c && !gc_map) gc_map = SDL_GameControllerMapping(c);
+  }
   g_inited = 1;
 
   napi_value r; CHECK(napi_create_object(env, &r));
@@ -100,6 +108,7 @@ static napi_value Init_(napi_env env, napi_callback_info info) {
   int dw = 0, dh = 0; SDL_GL_GetDrawableSize(g_win, &dw, &dh);
   set_int(env, r, "drawableWidth", dw); set_int(env, r, "drawableHeight", dh);
   set_int(env, r, "joysticks", nj);
+  if (gc_map) { set_str(env, r, "controllerMapping", gc_map); SDL_free(gc_map); }
   set_int(env, r, "es3", g_es3);
   set_int(env, r, "hasVao", g_has_vao);
   set_int(env, r, "hasInstancing", g_has_instancing);
@@ -138,6 +147,16 @@ static napi_value PollEvents(napi_env env, napi_callback_info info) {
       set_str(env, o, "type", "controllerremoved"); set_int(env, o, "which", e.cdevice.which);
       if (c) SDL_GameControllerClose(c);
       break; }
+    case SDL_MOUSEMOTION:
+      set_str(env, o, "type", "mousemove");
+      set_int(env, o, "x", e.motion.x); set_int(env, o, "y", e.motion.y); break;
+    case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP:
+      set_str(env, o, "type", e.type == SDL_MOUSEBUTTONDOWN ? "mousedown" : "mouseup");
+      set_int(env, o, "button", e.button.button);
+      set_int(env, o, "x", e.button.x); set_int(env, o, "y", e.button.y); break;
+    case SDL_MOUSEWHEEL:
+      set_str(env, o, "type", "wheel");
+      set_int(env, o, "dx", e.wheel.x); set_int(env, o, "dy", e.wheel.y); break;
     case SDL_WINDOWEVENT: {
       const char *nm = NULL;
       switch (e.window.event) {

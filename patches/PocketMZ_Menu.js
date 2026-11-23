@@ -34,7 +34,7 @@
     const L = ui.startsWith("ja") ? {
         title: "PocketMZ メニュー", resume: "ゲームに戻る", fps: "フレームレート", speed: "速度",
         showFps: "FPS 表示", volume: "全体音量", scale: "描画解像度", scaleAuto: "画面に合わせる",
-        scaleOff: "ゲーム本来", runtime: "実行環境", rtAuto: "自動", rtNow: "現在：", rtNext: "次回ゲーム起動から有効", rtNoBeta: "β 未インストール：NW.js を使います", stopEs: "起動中は ES を閉じる", next: "（次回起動から）", quit: "ゲームを終了", quitAsk: "ゲームを終了しますか？（セーブしていない進行は失われます）",
+        scaleOff: "ゲーム本来", smooth: "画面の平滑化", autosave: "オートセーブ/ロード", runtime: "実行環境", rtAuto: "自動", rtNow: "現在：", rtNext: "次回ゲーム起動から有効", rtNoBeta: "β 未インストール：NW.js を使います", stopEs: "起動中は ES を閉じる", next: "（次回起動から）", quit: "ゲームを終了", quitAsk: "ゲームを終了しますか？（セーブしていない進行は失われます）", quitAskAuto: "ゲームを終了しますか？（現在の進行を自動保存します）", autoLoaded: "セーブを自動読み込みしました",
         yes: "終了", no: "戻る", on: "オン", off: "オフ", hint: "F2 + F1：PocketMZ メニュー",
         keys: "↑↓ 選択 · ←→ 変更 · A 決定 · B 戻る",
         backups: "セーブのバックアップ", noBackups: "バックアップはまだありません（ゲーム起動時に自動で作られます）",
@@ -42,7 +42,7 @@
         restore: "戻す", restored: "セーブを戻しました。タイトル画面に戻ります。", failed: "失敗しました：", ok: "OK",
         prebuild: "画像の事前処理（一回だけ）", prebuildNote: "大きな画像を画面サイズで保存し、次からの読み込みを速く・軽くします。ゲームは一時停止のまま。", prebuildRun: n => "処理中… " + n, prebuildDone: r => "完了：" + r.built + " 作成、" + r.skipped + " 済み、" + r.failed + " 失敗", prebuildNone: "このゲームには不要です（画像が小さい）",
         keymap: "キー割り当て", note1: "変更はすぐ反映されます（このゲームだけ）。", note2: "F2 + F1 でこのメニューを開きます。",
-        stick: "右スティック", dpad: "十字キー / 左スティック", select: "Select", start: "Start",
+        stick: "右スティック", mouseSpd: "マウス速度", spSlow: "遅い", spNormal: "標準", spFast: "速い", dpad: "十字キー / 左スティック", select: "Select", start: "Start",
         stickMouse: "マウスポインタ", stickArrows: "矢印キー", none: "なし", arrows: "矢印キー",
         f2Note: "F2 を押しながら：ホットキー（F2+F1 メニュー、F2+Start 終了）",
         reset: "初期設定に戻す", resetAsk: "キー割り当てを初期設定に戻しますか？", resetYes: "戻す",
@@ -51,7 +51,7 @@
     } : ui.startsWith("en") ? {
         title: "PocketMZ menu", resume: "Resume", fps: "Frame rate", speed: "Speed",
         showFps: "Show FPS", volume: "Master volume", scale: "Render resolution", scaleAuto: "Screen size",
-        scaleOff: "Game size", runtime: "Runtime", rtAuto: "Auto", rtNow: "Now: ", rtNext: "Takes effect at the next game start", rtNoBeta: "β is not installed: NW.js will be used", stopEs: "Close ES while playing", next: " (next start)", quit: "Quit game", quitAsk: "Quit the game? (Unsaved progress is lost)",
+        scaleOff: "Game size", smooth: "Smooth scaling", autosave: "Auto save / load", runtime: "Runtime", rtAuto: "Auto", rtNow: "Now: ", rtNext: "Takes effect at the next game start", rtNoBeta: "β is not installed: NW.js will be used", stopEs: "Close ES while playing", next: " (next start)", quit: "Quit game", quitAsk: "Quit the game? (Unsaved progress is lost)", quitAskAuto: "Quit the game? (Current progress will be auto-saved)", autoLoaded: "Auto-loaded save",
         yes: "Quit", no: "Back", on: "On", off: "Off", hint: "F2 + F1: PocketMZ menu",
         keys: "↑↓ Select · ←→ Change · A OK · B Back",
         backups: "Save backups", noBackups: "No backups yet (made automatically when the game starts)",
@@ -59,7 +59,7 @@
         restore: "Restore", restored: "Saves restored. Back to the title screen.", failed: "Failed: ", ok: "OK",
         prebuild: "Precompile images (once)", prebuildNote: "Saves big images at screen size so later loads are faster and lighter. The game stays paused.", prebuildRun: n => "Working… " + n, prebuildDone: r => "Done: " + r.built + " made, " + r.skipped + " already there, " + r.failed + " failed", prebuildNone: "Not needed for this game (small images)",
         keymap: "Key mapping", note1: "Changes take effect at once (this game only).", note2: "F2 + F1 opens this menu.",
-        stick: "Right stick", dpad: "D-pad / left stick", select: "Select", start: "Start",
+        stick: "Right stick", mouseSpd: "Mouse speed", spSlow: "Slow", spNormal: "Normal", spFast: "Fast", dpad: "D-pad / left stick", select: "Select", start: "Start",
         stickMouse: "Mouse pointer", stickArrows: "Arrow keys", none: "Nothing", arrows: "Arrow keys",
         f2Note: "hold F2: hotkeys (F2+F1 menu, F2+Start quit)",
         reset: "Restore defaults", resetAsk: "Restore the default key mapping?", resetYes: "Restore",
@@ -68,7 +68,7 @@
     } : {
         title: "PocketMZ 菜单", resume: "继续游戏", fps: "帧率", speed: "加速",
         showFps: "显示帧数", volume: "总音量", scale: "渲染分辨率", scaleAuto: "按屏幕",
-        scaleOff: "游戏原始", runtime: "运行时", rtAuto: "自动", rtNow: "当前：", rtNext: "下次启动游戏生效", rtNoBeta: "β 未安装，将使用 NW.js", stopEs: "运行时关闭 ES（省内存）", next: "（下次启动生效）", quit: "退出游戏", quitAsk: "退出游戏？（没存档的进度会丢失）",
+        scaleOff: "游戏原始", smooth: "平滑画面", autosave: "自动保存/加载", runtime: "运行时", rtAuto: "自动", rtNow: "当前：", rtNext: "下次启动游戏生效", rtNoBeta: "β 未安装，将使用 NW.js", stopEs: "运行时关闭 ES（省内存）", next: "（下次启动生效）", quit: "退出游戏", quitAsk: "退出游戏？（没存档的进度会丢失）", quitAskAuto: "退出游戏？（将自动保存当前进度）", autoLoaded: "已自动加载存档",
         yes: "退出", no: "返回", on: "开", off: "关", hint: "F2 + F1：PocketMZ 菜单",
         keys: "↑↓ 选择 · ←→ 调整 · A 确定 · B 返回",
         backups: "存档备份", noBackups: "还没有备份（每次启动游戏时自动备份）",
@@ -76,7 +76,7 @@
         restore: "恢复", restored: "存档已恢复，回到标题画面。", failed: "失败：", ok: "好",
         prebuild: "预处理图片（一次性）", prebuildNote: "把大图按屏幕尺寸存下来，以后载入更快、更省内存。处理时游戏保持暂停。", prebuildRun: n => "处理中… " + n, prebuildDone: r => "完成：新建 " + r.built + "，已有 " + r.skipped + "，失败 " + r.failed, prebuildNone: "这个游戏不需要（图片都不大）",
         keymap: "按键映射", note1: "修改立即生效（仅此游戏）。", note2: "F2 + F1 打开本菜单。",
-        stick: "右摇杆", dpad: "方向键 / 左摇杆", select: "Select", start: "Start",
+        stick: "右摇杆", mouseSpd: "鼠标速度", spSlow: "慢", spNormal: "标准", spFast: "快", dpad: "方向键 / 左摇杆", select: "Select", start: "Start",
         stickMouse: "鼠标指针", stickArrows: "方向键", none: "无", arrows: "方向键",
         f2Note: "按住 F2：热键（F2+F1 菜单，F2+Start 退出）",
         reset: "恢复默认", resetAsk: "恢复默认按键映射？", resetYes: "恢复",
@@ -84,19 +84,32 @@
               z: "确定", x: "取消", space: "确定", mouse_left: "鼠标左键", mouse_right: "鼠标右键", nothing: "无" }
     };
 
-    // settings
-    const set = { showFps: false, volume: 100, renderScale: "auto" };
-    try { if (SETTINGS && fs.existsSync(SETTINGS)) Object.assign(set, JSON.parse(fs.readFileSync(SETTINGS, "utf8"))); } catch (e) {}
-    const save = () => {
+    // settings: diskSet keeps the game's own pocketmz.json values; ES forced options override `set` in memory only.
+    const penv = (window.process && process.env) || {};
+    const diskSet = {};
+    try { if (SETTINGS && fs.existsSync(SETTINGS)) Object.assign(diskSet, JSON.parse(fs.readFileSync(SETTINGS, "utf8"))); } catch (e) {}
+    const set = Object.assign({ showFps: false, volume: 100, renderScale: "auto", autosave: false }, diskSet);
+    if (penv.POCKETMZ_ES_SHOW_FPS === "1" || penv.POCKETMZ_ES_SHOW_FPS === "0") set.showFps = penv.POCKETMZ_ES_SHOW_FPS === "1";
+    if (penv.POCKETMZ_ES_RENDER_SCALE === "auto" || penv.POCKETMZ_ES_RENDER_SCALE === "off") set.renderScale = penv.POCKETMZ_ES_RENDER_SCALE;
+    if (penv.POCKETMZ_ES_SMOOTH === "1" || penv.POCKETMZ_ES_SMOOTH === "0") set.smooth = penv.POCKETMZ_ES_SMOOTH === "1";
+    if (penv.POCKETMZ_ES_STOP_ES === "1" || penv.POCKETMZ_ES_STOP_ES === "0") set.stopES = penv.POCKETMZ_ES_STOP_ES === "1";
+    if (["nw", "beta", "auto"].includes(penv.POCKETMZ_ES_RUNTIME)) set.runtime = penv.POCKETMZ_ES_RUNTIME;
+    if (penv.POCKETMZ_ES_AUTOSAVE === "1" || penv.POCKETMZ_ES_AUTOSAVE === "0") set.autosave = penv.POCKETMZ_ES_AUTOSAVE === "1";
+    const smoothEff = () => typeof set.smooth === "boolean" ? set.smooth
+        : penv.POCKETMZ_SMOOTH === "1" ? true
+        : penv.POCKETMZ_SMOOTH === "0" ? false
+        : typeof window.PMZ_SMOOTH === "boolean" ? window.PMZ_SMOOTH
+        : IS_MZ;
+    const save = key => {
+        if (key) diskSet[key] = set[key];
         if (!SETTINGS) return;
-        try { fs.writeFileSync(SETTINGS + ".tmp", JSON.stringify(set, null, 1)); fs.renameSync(SETTINGS + ".tmp", SETTINGS); } catch (e) {}
+        try { fs.writeFileSync(SETTINGS + ".tmp", JSON.stringify(diskSet, null, 1)); fs.renameSync(SETTINGS + ".tmp", SETTINGS); } catch (e) {}
     };
     let speed = 1;
-    // runtime (nw | beta | auto): per game in pocketmz.json ("runtime"), else the global default in settings.json, else nw. The launcher (pocketmz-run.sh) passes
+    // runtime (auto | beta | nw): per game in pocketmz.json ("runtime"), else the global default in settings.json, else auto. The launcher (pocketmz-run.sh) passes
     // POCKETMZ_RT_NOW (the runtime running now), POCKETMZ_RT_GLOBAL (global default) and POCKETMZ_BETA_INST (1 = β installed): /storage is not visible in the game's root.
-    const penv = (window.process && process.env) || {};
     const RT_OPTS = ["nw", "beta", "auto"];
-    const rtEff = () => RT_OPTS.includes(set.runtime) ? set.runtime : RT_OPTS.includes(penv.POCKETMZ_RT_GLOBAL) ? penv.POCKETMZ_RT_GLOBAL : "nw";
+    const rtEff = () => RT_OPTS.includes(set.runtime) ? set.runtime : RT_OPTS.includes(penv.POCKETMZ_RT_GLOBAL) ? penv.POCKETMZ_RT_GLOBAL : "auto";
     const rtName = v => v === "beta" ? "β" : v === "auto" ? L.rtAuto : "NW.js";
     let rtChanged = false;
     const rtNote = () => {
@@ -212,6 +225,30 @@
         // MZ caches the global info; MV 1.6 reads global.rpgsave on every call (nothing cached)
         if (IS_MZ && DataManager.loadGlobalInfo) DataManager.loadGlobalInfo();
     };
+    const sceneIs = name => { const s = window.SceneManager && SceneManager._scene; return !!(s && window[name] && s instanceof window[name]); };
+    const autoSaveFile = () => {
+        const d = saveDir();
+        return d && path ? path.join(d, "pmz-autosave.json") : null;
+    };
+    const canAutoSaveNow = () => !!(set.autosave && sceneIs("Scene_Map") && window.SceneManager && !SceneManager.isSceneChanging() &&
+        window.$gameParty && !$gameParty.inBattle() && window.$gameMap && !$gameMap.isEventRunning() && window.$gamePlayer && !$gamePlayer.isTransferring());
+    const doAutoSave = () => {
+        if (!canAutoSaveNow() || !fs || !window.DataManager || !window.JsonEx) return false;
+        try {
+            const f = autoSaveFile();
+            if (!f) return false;
+            fs.mkdirSync(path.dirname(f), { recursive: true });
+            if (window.$gameSystem && $gameSystem.onBeforeSave) $gameSystem.onBeforeSave();
+            const payload = JsonEx.stringify({ time: Date.now(), contents: DataManager.makeSaveContents() });
+            fs.writeFileSync(f + ".tmp", payload);
+            fs.renameSync(f + ".tmp", f);
+            return true;
+        } catch (e) { console.error("PocketMZ autosave", e); return false; }
+    };
+    const quitGame = () => {
+        doAutoSave();
+        try { nw.App.quit(); } catch (err) { window.close(); }
+    };
 
     // key mapping: <thin copy>/pocketmz.gptk, always written complete (gptokeyb .gptk format)
     const GP_ORDER = ["back", "start", "a", "b", "x", "y", "l1", "r1", "l2", "r2", "l3", "r3", "up", "down", "left", "right",
@@ -236,7 +273,7 @@
     const DOM_KEY = { enter: "enter", esc: "escape", shift: "shift", pageup: "pageup", pagedown: "pagedown", space: " ", tab: "tab", ctrl: "control" };
     const domKey = v => DOM_KEY[v] || v;
 
-    const gmap = Object.assign({}, GP_DEFAULT, { stick: "mouse" });
+    const gmap = Object.assign({}, GP_DEFAULT, { stick: "mouse", mouseSpeed: "normal" });
     const parseGptk = text => {
         const m = {};
         for (const line of String(text).split(/\r?\n/)) {
@@ -248,8 +285,11 @@
         for (const id of EDIT) if (id in m) gmap[id] = noKey(m[id]) ? "nothing" : m[id];
         const s = m.right_analog_up;
         if (s !== undefined) gmap.stick = s.startsWith("mouse_movement") ? "mouse" : noKey(s) ? "none" : DIRS.includes(s) ? "arrows" : "mouse";
+        const ds = parseFloat(m.deadzone_scale);
+        if (isFinite(ds) && ds > 0) gmap.mouseSpeed = ds <= 4.5 ? "slow" : ds >= 8 ? "fast" : "normal";
     };
     const loadGptk = () => { try { if (GPTK && fs.existsSync(GPTK)) parseGptk(fs.readFileSync(GPTK, "utf8")); } catch (e) {} };
+    const MOUSE_SPEED_CFG = { slow: [4, 8192], normal: [6, 5400], fast: [9, 3600] };
     const serializeGptk = () => {
         const out = [];
         for (const name of GP_ORDER) {
@@ -260,6 +300,8 @@
             } else v = EDIT.includes(name) ? gmap[name] : GP_DEFAULT[name];
             out.push(name + " = " + (v === "nothing" ? '\\"' : v));
         }
+        const sp = MOUSE_SPEED_CFG[gmap.mouseSpeed] || MOUSE_SPEED_CFG.normal;
+        out.push("deadzone_mode = scaled_radial", "deadzone = 7200", "deadzone_scale = " + sp[0], "mouse_scale = " + sp[1]);
         return out.join("\n") + "\n";
     };
     const writeGptk = () => {
@@ -267,7 +309,7 @@
         try { fs.writeFileSync(GPTK + ".tmp", serializeGptk()); fs.renameSync(GPTK + ".tmp", GPTK); } catch (e) {}
     };
     const resetGptk = () => {
-        Object.assign(gmap, GP_DEFAULT, { stick: "mouse" });
+        Object.assign(gmap, GP_DEFAULT, { stick: "mouse", mouseSpeed: "normal" });
         try { if (GPTK && fs.existsSync(GPTK)) fs.unlinkSync(GPTK); } catch (e) {}
     };
     loadGptk();
@@ -282,6 +324,11 @@
         gmap.stick = o[(o.indexOf(gmap.stick) + d + 3) % 3];
         writeGptk();
     };
+    const cycleMouseSpeed = d => {
+        const o = ["slow", "normal", "fast"];
+        gmap.mouseSpeed = o[(o.indexOf(gmap.mouseSpeed) + d + 3) % 3];
+        writeGptk();
+    };
 
     // pages: main | backups | keymap | askQuit | askRestore | askReset | msg
     let layer = null, sel = 0, page = "main", askYes = false, bsel = 0, ksel = 0, backups = [], pick = null, message = "";
@@ -294,6 +341,8 @@
         { k: "volume", label: L.volume, v: set.volume + "%" },
         { k: "runtime", label: L.runtime, v: rtName(rtEff()) },
         { k: "scale", label: L.scale + L.next, v: set.renderScale === "off" ? L.scaleOff : L.scaleAuto },
+        { k: "smooth", label: L.smooth, v: smoothEff() ? L.on : L.off },
+        { k: "autosave", label: L.autosave, v: set.autosave ? L.on : L.off },
         { k: "stopES", label: L.stopEs + L.next, v: set.stopES ? L.on : L.off },
         { k: "keymap", label: L.keymap },
         ...(window.PMZ_IMG && PMZ_IMG.prebuild ? [{ k: "prebuild", label: L.prebuild }] : []),
@@ -304,6 +353,7 @@
     const keyItems = () => [
         ...EDIT.map(id => ({ k: id, label: BTN_LABEL[id] || id.toUpperCase(), v: keyLabel(gmap[id]) })),
         { k: "stick", label: L.stick, v: gmap.stick === "mouse" ? L.stickMouse : gmap.stick === "arrows" ? L.stickArrows : L.none },
+        { k: "mouseSpd", label: L.mouseSpd, v: gmap.mouseSpeed === "slow" ? L.spSlow : gmap.mouseSpeed === "fast" ? L.spFast : L.spNormal },
         { k: "reset", label: L.reset }
     ];
     const fixedItems = () => [
@@ -324,7 +374,7 @@
         h.textContent = page === "prebuild" ? L.prebuild : page === "backups" || page === "askRestore" ? L.backups : page === "keymap" || page === "askReset" ? L.keymap : L.title;
         box.appendChild(h);
         if (page === "askQuit" || page === "askRestore" || page === "askReset") {
-            say(box, page === "askQuit" ? L.quitAsk : page === "askReset" ? L.resetAsk : L.restoreAsk(pick.label));
+            say(box, page === "askQuit" ? (canAutoSaveNow() ? L.quitAskAuto : L.quitAsk) : page === "askReset" ? L.resetAsk : L.restoreAsk(pick.label));
             row(box, L.no, !askYes);
             row(box, page === "askQuit" ? L.yes : page === "askReset" ? L.resetYes : L.restore, askYes);
         } else if (page === "msg") {
@@ -367,13 +417,15 @@
     };
     const hide = () => { open = false; if (layer) layer.hidden = true; if (window.Input) Input.clear(); };
     const change = (k, d) => {
-        if (k === "fps") { ConfigManager.gkdFrameRate = ConfigManager.gkdFrameRate === 60 ? 30 : 60; try { ConfigManager.save(); } catch (e) {} }
+        if (k === "fps") { ConfigManager.gkdFrameRate = ConfigManager.gkdFrameRate === 60 ? 30 : 60; ConfigManager._gkdUserChangedFps = true; ConfigManager._gkdSavedFrameRate = ConfigManager.gkdFrameRate; try { ConfigManager.save(); } catch (e) {} }
         else if (k === "speed") speed = ((speed - 1 + (d || 1) + 3) % 3) + 1;          // 1 -> 2 -> 3 -> 1
-        else if (k === "showFps") { set.showFps = !set.showFps; save(); fpsTick(); }
-        else if (k === "volume") { set.volume = Math.max(0, Math.min(100, set.volume + (d || 1) * 10)); applyVolume(); save(); }
-        else if (k === "scale") { set.renderScale = set.renderScale === "off" ? "auto" : "off"; save(); }
-        else if (k === "stopES") { set.stopES = !set.stopES; save(); }
-        else if (k === "runtime") { set.runtime = RT_OPTS[(RT_OPTS.indexOf(rtEff()) + (d || 1) + 3) % 3]; rtChanged = true; save(); }
+        else if (k === "showFps") { set.showFps = !set.showFps; save("showFps"); fpsTick(); }
+        else if (k === "volume") { set.volume = Math.max(0, Math.min(100, set.volume + (d || 1) * 10)); applyVolume(); save("volume"); }
+        else if (k === "scale") { set.renderScale = set.renderScale === "off" ? "auto" : "off"; save("renderScale"); }
+        else if (k === "smooth") { set.smooth = !smoothEff(); save("smooth"); if (typeof window.PMZ_applySmooth === "function") window.PMZ_applySmooth(set.smooth); }
+        else if (k === "autosave") { set.autosave = !set.autosave; save("autosave"); }
+        else if (k === "stopES") { set.stopES = !set.stopES; save("stopES"); }
+        else if (k === "runtime") { set.runtime = RT_OPTS[(RT_OPTS.indexOf(rtEff()) + (d || 1) + 3) % 3]; rtChanged = true; save("runtime"); }
     };
     // one-time image precompile (PMZ_IMG.prebuild from PocketMZ_Handheld / HandheldMV): runs while
     // the menu is open (the game is paused), progress shown on its page
@@ -406,7 +458,7 @@
             else if (k === "Escape") page = back;
             else if (isOk(k)) {
                 if (!askYes) page = back;
-                else if (page === "askQuit") { try { nw.App.quit(); } catch (err) { window.close(); } }
+                else if (page === "askQuit") { quitGame(); }
                 else if (page === "askReset") { resetGptk(); page = "keymap"; }
                 else {
                     try { restoreBackup(pick); message = L.restored; pick = "restored"; }
@@ -440,6 +492,7 @@
             const act = d => {
                 const id = list[ksel].k;
                 if (id === "stick") cycleStick(d);
+                else if (id === "mouseSpd") cycleMouseSpeed(d);
                 else if (id !== "reset") cycleKey(id, d);
             };
             if (k === "ArrowUp") ksel = (ksel + list.length - 1) % list.length;
@@ -476,22 +529,6 @@
     }, true);
     window.addEventListener("blur", () => { r1Held = false; });
 
-    // one hint on the title screen
-    let hinted = false;
-    const _titleStart = Scene_Title.prototype.start;
-    Scene_Title.prototype.start = function() {
-        _titleStart.apply(this, arguments);
-        if (hinted) return;
-        hinted = true;
-        const h = document.createElement("div"); h.id = "pmzHint"; h.textContent = L.hint;
-        document.body.appendChild(h);
-        setTimeout(() => h.remove(), 5000);
-    };
-    // "Hold F2" hotkeys, the handheld's unified set (same as its emulators). pocketmz-hotkeys.py
-    // (started by pocketmz-run.sh) reads the pad and sends one command per line over
-    // 127.0.0.1:9334. While F2 is held the game gets no keys, so F2 + A does not also press OK.
-    const net = window.require ? (() => { try { return require("net"); } catch (e) { return null; } })() : null;
-    let f2Held = false, f2Timer = null;
     const toast = (() => {
         let box = null, timer = null;
         return text => {
@@ -504,10 +541,73 @@
             clearTimeout(timer); timer = setTimeout(() => { box.hidden = true; }, 1500);
         };
     })();
+    // one hint on the title screen + auto-load latest save when autosave is enabled
+    let hinted = false, autoLoaded = false, autoTries = 0;
+    const startAutoLoad = () => {
+        if (!set.autosave || autoLoaded || !fs || !window.DataManager || !window.JsonEx) return;
+        if (IS_MZ && DataManager.isGlobalInfoLoaded && !DataManager.isGlobalInfoLoaded()) {
+            if (autoTries++ < 20) setTimeout(startAutoLoad, 100);
+            return;
+        }
+        autoLoaded = true;
+        let autoData = null;
+        try {
+            const f = autoSaveFile();
+            if (f && fs.existsSync(f)) autoData = JsonEx.parse(fs.readFileSync(f, "utf8"));
+        } catch (e) { autoData = null; }
+        const ginfo = IS_MZ ? DataManager._globalInfo : (DataManager.loadGlobalInfo ? DataManager.loadGlobalInfo() : null);
+        let latestId = 0, latestTime = 0;
+        try {
+            if (DataManager.latestSavefileId) latestId = DataManager.latestSavefileId() || 0;
+            if (latestId > 0 && ginfo && ginfo[latestId]) latestTime = ginfo[latestId].timestamp || 0;
+        } catch (e) { latestId = 0; latestTime = 0; }
+        const autoTime = (autoData && autoData.contents && Number(autoData.time)) || 0;
+        const enterMap = () => {
+            if (window.AudioManager && AudioManager.stopAll) AudioManager.stopAll();
+            if (window.$gamePlayer && window.$gameMap) {
+                $gamePlayer.reserveTransfer($gameMap.mapId(), $gamePlayer.x, $gamePlayer.y);
+                if ($gamePlayer.requestMapReload) $gamePlayer.requestMapReload();
+            }
+            SceneManager.goto(Scene_Map);
+            if (window.$gameSystem && $gameSystem.onAfterLoad) $gameSystem.onAfterLoad();
+            toast(L.autoLoaded);
+        };
+        if (autoData && autoData.contents && autoTime >= latestTime) {
+            try {
+                DataManager.createGameObjects();
+                DataManager.extractSaveContents(autoData.contents);
+                if (DataManager.correctDataErrors) DataManager.correctDataErrors();
+                enterMap();
+                return;
+            } catch (e) { console.error("PocketMZ autoload", e); }
+        }
+        if (latestId > 0 && DataManager.loadGame) {
+            try {
+                const r = DataManager.loadGame(latestId);
+                if (r && typeof r.then === "function") r.then(enterMap, e => console.error("PocketMZ autoload slot", e));
+                else if (r) enterMap();
+            } catch (e) { console.error("PocketMZ autoload slot", e); }
+        }
+    };
+    const _titleStart = Scene_Title.prototype.start;
+    Scene_Title.prototype.start = function() {
+        _titleStart.apply(this, arguments);
+        if (!hinted) {
+            hinted = true;
+            const h = document.createElement("div"); h.id = "pmzHint"; h.textContent = L.hint;
+            document.body.appendChild(h);
+            setTimeout(() => h.remove(), 5000);
+        }
+        startAutoLoad();
+    };
+    // "Hold F2" hotkeys, the handheld's unified set (same as its emulators). pocketmz-hotkeys.py
+    // (started by pocketmz-run.sh) reads the pad and sends one command per line over
+    // 127.0.0.1:9334. While F2 is held the game gets no keys, so F2 + A does not also press OK.
+    const net = window.require ? (() => { try { return require("net"); } catch (e) { return null; } })() : null;
+    let f2Held = false, f2Timer = null;
     const HK = ui.startsWith("ja") ? { pause: "一時停止", resume: "再開", slowOn: "スロー：オン", slowOff: "スロー：オフ", ff: "早送り", shot: "スクリーンショット保存", shotFail: "スクリーンショット失敗", vol: "音量 " }
         : ui.startsWith("en") ? { pause: "Paused", resume: "Resumed", slowOn: "Slow motion: on", slowOff: "Slow motion: off", ff: "Fast forward", shot: "Screenshot saved", shotFail: "Screenshot failed", vol: "Volume " }
         : { pause: "暂停", resume: "继续", slowOn: "慢动作：开", slowOff: "慢动作：关", ff: "快进", shot: "截图已保存", shotFail: "截图失败", vol: "音量 " };
-    const sceneIs = name => { const s = SceneManager._scene; return !!(s && window[name] && s instanceof window[name]); };
     const canPush = () => SceneManager._scene && !SceneManager.isSceneChanging() && !sceneIs("Scene_Boot");
     const hkLog = [];
     const command = line => {
@@ -520,17 +620,17 @@
             return;
         }
         if (cmd === "menu") { if (open) hide(); else show(); return; }
-        if (cmd === "quit") { try { nw.App.quit(); } catch (e) { window.close(); } return; }
+        if (cmd === "quit") { quitGame(); return; }
         if (cmd === "ff0") { ff = false; return; }
         if (cmd === "shot") { toast(arg ? HK.shot : HK.shotFail); return; }
         if (open) return;                                   // the rest only while playing
         if (cmd === "pause") { paused = !paused; toast(paused ? HK.pause : HK.resume); }
         else if (cmd === "slow") { slow = !slow; toast(slow ? HK.slowOn : HK.slowOff); }
         else if (cmd === "ff1") { ff = true; toast(HK.ff); }
-        else if (cmd === "fps") { set.showFps = !set.showFps; save(); fpsTick(); }
+        else if (cmd === "fps") { set.showFps = !set.showFps; save("showFps"); fpsTick(); }
         else if (cmd === "vol+" || cmd === "vol-") {
             set.volume = Math.max(0, Math.min(100, set.volume + (cmd === "vol+" ? 10 : -10)));
-            applyVolume(); save(); toast(HK.vol + set.volume + "%");
+            applyVolume(); save("volume"); toast(HK.vol + set.volume + "%");
         }
         else if (cmd === "title") { if (canPush() && !sceneIs("Scene_Title")) { paused = false; SceneManager.goto(Scene_Title); } }
         else if (cmd === "save") { if (canPush() && sceneIs("Scene_Map") && !$gameParty.inBattle()) { paused = false; SceneManager.push(Scene_Save); } }

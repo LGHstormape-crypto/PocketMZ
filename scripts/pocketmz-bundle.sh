@@ -19,7 +19,7 @@ OUT="${1:-/storage/pocketmz-bundle-$(date +%Y%m%d).tar}"
 [ -f "$RZ/rootfs.sqfs" ] || { echo "no $RZ/rootfs.sqfs" >&2; exit 1; }
 cd "$RZ"
 LIST=""
-for f in rootfs.sqfs VERSION patches launcher vendor ports README.md LICENSE THIRD-PARTY.txt INTEGRATION.md es_systems_pocketmz.cfg modules pocketmz.gptk gkd-thermal *.sh *.py *.js; do [ -e "$f" ] && LIST="$LIST $f"; done
+for f in rootfs.sqfs VERSION patches launcher vendor ports README.md LICENSE THIRD-PARTY.txt INTEGRATION.md es_systems_pocketmz.cfg es_features_pocketmz.cfg modules pocketmz.gptk gkd-thermal *.sh *.py *.js; do [ -e "$f" ] && LIST="$LIST $f"; done
 if [ $BETA = 1 ]; then
   for f in beta-runtime.sqfs beta/beta-mount.sh beta/run-pmzrun.sh beta/beta-version.sh beta/pocketmz-test-beta.sh; do
     [ -f "$f" ] || { echo "--beta: no $RZ/$f (build the image with beta/beta-image.sh, deploy the beta scripts)" >&2; exit 1; }
