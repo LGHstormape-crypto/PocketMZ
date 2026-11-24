@@ -451,7 +451,7 @@
     //      backing buffers + tickers on destroyApng. POCKETMZ_APNG_FIX=off disables.
     if (hasPlugin("ApngPicture") && window.SceneManager && SceneManager.setupApngLoaderIfNeed &&
         String((window.process && process.env && process.env.POCKETMZ_APNG_FIX) || "on") !== "off") {
-        const MAX_CACHE_COUNT = 3;
+        const MAX_CACHE_COUNT = 4;
         const MAX_CACHE_BYTES = 48 * 1024 * 1024;
 
         const apngBytes = sp => {
@@ -602,10 +602,11 @@
             lruBytes += bytes;
             while (lruOrder.length > MAX_CACHE_COUNT || lruBytes > MAX_CACHE_BYTES) {
                 const evIdx = lruOrder.findIndex(e => {
+                    if (e.loader === loader && e.name === name) return false;   // never self-evict before caller mounts it
                     const cached = e.loader._spriteCache && e.loader._spriteCache[e.name];
                     return !cached || !cached.parent;
                 });
-                if (evIdx < 0) break;   // all cached sprites are currently mounted on screen
+                if (evIdx < 0) break;   // all other cached sprites are currently mounted on screen
                 const ev = lruOrder.splice(evIdx, 1)[0];
                 lruBytes -= ev.bytes;
                 const oldSp = ev.loader._spriteCache && ev.loader._spriteCache[ev.name];
@@ -626,6 +627,10 @@
             }
             const origCreate = loader.createSprite.bind(loader);
             loader.createSprite = function(name) {
+                const cached = this._spriteCache && this._spriteCache[name];
+                if (cached && (!cached.pixiApng || !Array.isArray(cached.pixiApng.textures) || cached.pixiApng.textures.length === 0)) {
+                    delete this._spriteCache[name];
+                }
                 const sp = origCreate(name);
                 if (sp && this._isNeedCache(name) && this._spriteCache && this._spriteCache[name] === sp) {
                     touchLru(this, name, sp);
@@ -644,12 +649,12 @@
             return r;
         };
 
-        // 3. Stop tickers on removeApng (for cached sprites) and release buffers on destroyApng
+        // 3. Stop tickers on removeApng (when actually removed from this parent) and release buffers on destroyApng
         if (Sprite.prototype.removeApng) {
             const origRemove = Sprite.prototype.removeApng;
             Sprite.prototype.removeApng = function() {
                 const sp = this._apngSprite;
-                if (sp && sp.pixiApng) {
+                if (sp && sp.pixiApng && sp.parent === this) {
                     try { sp.pixiApng.stop(); } catch (e) {}
                 }
                 return origRemove.apply(this, arguments);
