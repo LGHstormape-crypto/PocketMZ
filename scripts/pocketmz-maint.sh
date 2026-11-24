@@ -47,7 +47,6 @@ case "$1" in
   info)
     echo "version=$(cat "$PMZ/VERSION" 2>/dev/null || echo ?)"
     echo "games=$(ls -1d "$RZ"/games/*/game 2>/dev/null | wc -l)"
-    echo "launchers=$(ls -1 /storage/roms/rpgmz/*.rpgmz 2>/dev/null | wc -l)"
     n=$(
       {
         for s in "$SAVE_BASE"/*/save; do
@@ -125,10 +124,7 @@ case "$1" in
     NEW=/storage/pocketmz-new
     rm -rf "${NEW:?}"; mkdir -p "$NEW"
     tar -xf "$PKG" -C "$NEW" || { rm -rf "${NEW:?}"; fail "$(T "解压失败：$PKG" "展開に失敗しました：$PKG" "could not unpack $PKG")"; }
-    # with the ES system "RPGMZ" the scan writes launchers; otherwise games are picked in the menu
-    MODE=--menu
-    grep -qs "<name>rpgmz</name>" /storage/.config/emulationstation/es_systems_*.cfg /usr/config/emulationstation/es_systems*.cfg && MODE=""
-    if sh "$NEW/pocketmz-install.sh" $MODE > /storage/pocketmz-install.log 2>&1; then
+    if sh "$NEW/pocketmz-install.sh" --menu > /storage/pocketmz-install.log 2>&1; then
       rm -rf "${NEW:?}"; ok "$(T "已更新到 $v，下次启动生效" "$v に更新しました（次回起動から）" "updated to $v")"
     fi
     rm -rf "${NEW:?}"; fail "$(T "安装失败，详见 /storage/pocketmz-install.log" "インストールに失敗しました。/storage/pocketmz-install.log を参照" "install failed, see /storage/pocketmz-install.log")" ;;
@@ -156,17 +152,6 @@ case "$1" in
     else
       rm -rf "${SAVE_BASE:?}/${ID:?}"
     fi
-    # Remove .rpgmz launchers matching id or dir, plus legacy Ports entries
-    for lf in /storage/roms/rpgmz/*.rpgmz; do
-      [ -f "$lf" ] || continue
-      if grep -qxF "id=$ID" "$lf" 2>/dev/null || { [ -n "$GDIR" ] && grep -qxF "dir=$GDIR" "$lf" 2>/dev/null; }; then
-        rm -f "$lf"
-      fi
-    done
-    for pf in /storage/roms/ports/*.sh; do
-      [ -f "$pf" ] || continue
-      grep -q "^# pocketmz: $ID\$" "$pf" 2>/dev/null && rm -f "$pf"
-    done
     if [ -n "$GDIR" ] && [ -d "$GDIR" ]; then
       rm -rf "$GDIR"
       parent=$(dirname "$GDIR")
@@ -174,11 +159,10 @@ case "$1" in
     fi
     rm -rf "${RZ:?}/games/${ID:?}"
     rm -f "$RZ/launcher/library/covers/${ID}-"*.png "$RZ/launcher/library/thumbs/${ID}-"*.png 2>/dev/null || true
-    curl -s -m 5 http://127.0.0.1:1234/reloadgames >/dev/null 2>&1 || true
     if [ "$SMODE" = keep-saves ]; then
-      ok "$(T "已删除游戏与映射；存档保留在 roms/savestates/rpgmz/$ID/" "ゲームと項目を削除しました（セーブは roms/savestates/rpgmz/$ID/ に保持）" "deleted game; saves kept in roms/savestates/rpgmz/$ID/")"
+      ok "$(T "已删除游戏与副本；存档保留在 roms/savestates/rpgmz/$ID/" "ゲームとコピーを削除しました（セーブは roms/savestates/rpgmz/$ID/ に保持）" "deleted game; saves kept in roms/savestates/rpgmz/$ID/")"
     else
-      ok "$(T "已彻底删除游戏、映射与全部存档" "ゲーム・項目・セーブをすべて削除しました" "deleted game, launcher, and saves")"
+      ok "$(T "已彻底删除游戏、副本与全部存档" "ゲーム・コピー・セーブをすべて削除しました" "deleted game and saves")"
     fi ;;
 
   uninstall)

@@ -1,37 +1,29 @@
 #!/bin/bash
-# Run an RPG Maker MV/MZ game (NW.js arm64 in the Debian chroot) on ROCKNIX / sway.
+# Run an RPG Maker MV/MZ game (β native runtime by default; NW.js arm64 fallback) via PortMaster.
 # Usage: pocketmz-run.sh <original game dir> [id]
 # The game dir holds index.html (MZ) or package.json + www/index.html (MV). Without an id one is
-# derived from the path (DLsite code RJ/VJ######, else folder name + hash), the same way as
-# pocketmz-scan.sh, so saves in /storage/pocketmz/games/<id>/ stay with the game.
+# derived from the path (DLsite code RJ/VJ######, else folder name + hash), matching pocketmz-library.py.
 # The original folder is never written: a thin copy lives in /storage/pocketmz/games/<id>/game
-# (saves in .../game/save, patches PocketMZ_*.js registered last in js/plugins.js).
+# (saves in /storage/roms/savestates/rpgmz/<id>/save, patches PocketMZ_*.js registered last in js/plugins.js).
 #
 # POCKETMZ_STOP_ES=0 (default): ES stays running behind the game; the kernel moves it into zram
-# (~40-50 MB real), measured no difference in free memory or speed (notes/progress.md), and
-# returning to ES is instant. POCKETMZ_STOP_ES=1: the game runs in its own systemd unit, ES is
-# stopped while it runs and started again afterwards (~20 s back to the game list).
-#
-# Also: pocketmz-run.sh <launcher.rpgmz> - the ES system "RPGMZ" (run by PocketMZ) starts games through
-# small launcher files (made by pocketmz-scan.sh) holding the lines dir=<game dir> and id=<id>.
-# And: pocketmz-run.sh --menu - the PocketMZ game menu ($RZ/launcher, an NW.js page) instead of a
-# game, with the same window / button / memory setup (used by pocketmz-menu.sh).
+# (~40-50 MB real) and returning to the menu is instant. POCKETMZ_STOP_ES=1: ES is stopped while
+# playing (~50 MB saved, slower return).
+# And: pocketmz-run.sh --menu - the PocketMZ game menu (used by pocketmz-menu.sh).
 PMZ="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"   # program files (may be read-only)
 RZ="${POCKETMZ_DATA:-/storage/pocketmz}"                 # data: games, saves, browser profiles
 SRC="${1%/}"; ID="$2"
 MENU=""
 [ "$1" = --menu ] && { MENU=1; SRC="$PMZ/launcher"; ID=_menu; }
-case "$SRC" in
-  *.rpgmz)
-    [ -f "$SRC" ] || { echo "no launcher $SRC" >&2; exit 1; }
-    L="$SRC"
-    SRC=$(sed -n 's/^dir=//p' "$L" | head -1); SRC="${SRC%/}"
-    ID=$(sed -n 's/^id=//p' "$L" | head -1)
-    [ -d "$SRC" ] || { echo "game folder not found: $SRC (launcher $L)" >&2; exit 1; } ;;
-esac
-[ -z "$L" ] && [ -n "$POCKETMZ_LAUNCHER" ] && L="$POCKETMZ_LAUNCHER"
-[ -n "$L" ] && export POCKETMZ_LAUNCHER="$L"
-[ -z "$ID" ] && ID=$("$PMZ/pocketmz-scan.sh" --id "$SRC")
+game_id() {
+  local code name hash
+  code=$(printf %s "$1" | grep -o '[RVB]J[0-9]\{6,8\}' | tail -1)
+  if [ -n "$code" ]; then echo "$code"; return; fi
+  name=$(basename "$1" | tr -c 'A-Za-z0-9._-' '_' | tr -s '_' | sed 's/^_//; s/_$//' | cut -c1-32)
+  hash=$(printf %s "$1" | md5sum | cut -c1-8)
+  echo "${name:+$name-}$hash"
+}
+[ -z "$ID" ] && ID=$(game_id "$SRC")
 WEB=""; [ ! -f "$SRC/index.html" ] && [ -f "$SRC/www/index.html" ] && WEB="www/"
 LOG="$RZ/games/$ID/run.log"
 . /etc/profile >/dev/null 2>&1
@@ -44,67 +36,10 @@ LOG="$RZ/games/$ID/run.log"
 for v in STOP_ES MEM_MAX MEM_HIGH SWAP_MAX SWAPPINESS EXTRA_ARGS JS_FLAGS RENDER_SCALE IMG_SCALE SUBSET_FONTS; do
   eval "[ -z \"\$POCKETMZ_$v\" ] && [ -n \"\$RPGMZ_$v\" ] && POCKETMZ_$v=\"\$RPGMZ_$v\""
 done
-# Query ES system.cfg ONLY at rpgmz["<game>.rpgmz"] / rpgmz levels so "auto" stays empty
-es_setting() {
-  local conf="${J_CONF:-/storage/.config/system/configs/system.cfg}"
-  [ -r "$conf" ] || return 0
-  GS_KEY="$1" GS_GAME="$(basename "${L:-}")" awk '
-    BEGIN {
-      k = ENVIRON["GS_KEY"]; g = ENVIRON["GS_GAME"]
-      if (g != "") key[++n] = "rpgmz[\"" g "\"]." k
-      key[++n] = "rpgmz." k
-      for (i = 1; i <= n; i++) len[i] = length(key[i]) + 1
-    }
-    {
-      for (i = 1; i <= n; i++)
-        if (!(i in val) && substr($0, 1, len[i]) == key[i] "=")
-          val[i] = substr($0, len[i] + 1)
-    }
-    END {
-      for (i = 1; i <= n; i++)
-        if (val[i] != "") { print val[i]; exit }
-    }' "$conf"
-}
-# global defaults from the PocketMZ settings ($RZ/settings.json, written by pocketmz-settings.py);
-# ES explicit settings win over in-game pocketmz.json and settings.json; ES "auto" leaves them to the game.
+# global defaults from the PocketMZ settings ($RZ/settings.json, written by pocketmz-launcher.py);
+# per-game pocketmz.json wins over settings.json.
 GSET="$RZ/settings.json"
 gset() { [ -f "$GSET" ] && grep -o "\"$1\": *[^,}]*" "$GSET" | head -1 | sed 's/.*: *//; s/"//g; s/ //g'; }
-if [ -z "$MENU" ]; then
-  ES_STOP=$(es_setting stop_es)
-  case "$ES_STOP" in
-    true|1|on) POCKETMZ_STOP_ES=1; export POCKETMZ_ES_STOP_ES=1 ;;
-    false|0|off) POCKETMZ_STOP_ES=0; export POCKETMZ_ES_STOP_ES=0 ;;
-  esac
-  ES_RS=$(es_setting render_scale)
-  case "$ES_RS" in
-    screen|auto) export POCKETMZ_RENDER_SCALE=auto POCKETMZ_ES_RENDER_SCALE=auto ;;
-    off|native) export POCKETMZ_RENDER_SCALE=off POCKETMZ_ES_RENDER_SCALE=off ;;
-  esac
-  ES_SM=$(es_setting smooth)
-  case "$ES_SM" in
-    true|1|on) export POCKETMZ_SMOOTH=1 POCKETMZ_ES_SMOOTH=1 ;;
-    false|0|off) export POCKETMZ_SMOOTH=0 POCKETMZ_ES_SMOOTH=0 ;;
-  esac
-  ES_FPS=$(es_setting fps_limit)
-  case "$ES_FPS" in
-    30|60) export POCKETMZ_DEFAULT_FPS="$ES_FPS" POCKETMZ_ES_FPS="$ES_FPS" ;;
-  esac
-  ES_SF=$(es_setting show_fps)
-  case "$ES_SF" in
-    true|1|on) export POCKETMZ_ES_SHOW_FPS=1 ;;
-    false|0|off) export POCKETMZ_ES_SHOW_FPS=0 ;;
-  esac
-  ES_RT=$(es_setting runtime)
-  case "$ES_RT" in
-    autopick|auto) export POCKETMZ_GAME_RUNTIME=auto POCKETMZ_ES_RUNTIME=auto ;;
-    beta|nw) export POCKETMZ_GAME_RUNTIME="$ES_RT" POCKETMZ_ES_RUNTIME="$ES_RT" ;;
-  esac
-  ES_AS=$(es_setting autosave)
-  case "$ES_AS" in
-    true|1|on) export POCKETMZ_ES_AUTOSAVE=1 ;;
-    false|0|off) export POCKETMZ_ES_AUTOSAVE=0 ;;
-  esac
-fi
 if [ -z "$POCKETMZ_STOP_ES" ] && [ -f "$RZ/games/$ID/game/pocketmz.json" ]; then
   case "$(grep -o '"stopES": *[a-z]*' "$RZ/games/$ID/game/pocketmz.json" | head -1 | sed 's/.*: *//')" in
     true) POCKETMZ_STOP_ES=1 ;; false) POCKETMZ_STOP_ES=0 ;;
@@ -173,11 +108,9 @@ cleanup() {
   fi
   [ -n "$OLD_DMC_GOV" ] && [ -n "${DMC_FREQ:-}" ] && echo "$OLD_DMC_GOV" > "${DMC_FREQ}/governor" 2>/dev/null
   [ -n "$OLD_GPU_GOV" ] && echo "$OLD_GPU_GOV" > "$GPU_GOV_FILE" 2>/dev/null
-  SYS_THREADS=$(get_setting system.threads 2>/dev/null)
   if command -v onlinethreads >/dev/null; then
-    [ -n "$SYS_THREADS" ] && [ "$SYS_THREADS" != default ] && onlinethreads "$SYS_THREADS" 0 2>/dev/null || onlinethreads all 1 2>/dev/null
+    onlinethreads all 1 2>/dev/null || true
   fi
-  [ -n "$OWN_THERMAL" ] && systemctl stop pocketmz-thermal
   [ -n "$POCKETMZ_DETACHED" ] && systemctl start essway
   ts "cleanup done"
 }
@@ -187,37 +120,21 @@ if [ -n "$POCKETMZ_DETACHED" ]; then
   sleep 1                        # let ES finish returning from the port script
   systemctl stop essway && ts "ES stopped"
 fi
-ES_FORCEPACK=$(es_setting forcepack)
-case "$ES_FORCEPACK" in On|on|1|true) export PAN_MESA_DEBUG="${PAN_MESA_DEBUG:+$PAN_MESA_DEBUG,}forcepack" ;; esac
-ES_THREADS=$(es_setting threads)
 if command -v onlinethreads >/dev/null; then
-  if [ -n "$ES_THREADS" ] && [ "$ES_THREADS" != default ] && [ "$ES_THREADS" != auto ]; then
-    onlinethreads "$ES_THREADS" 0
-  else
-    onlinethreads all 1
-  fi
+  onlinethreads all 1 2>/dev/null || true
 fi
-ES_CPUGOV=$(es_setting cpugovernor)
-case "$ES_CPUGOV" in ""|auto|default) ES_CPUGOV=performance ;; esac
-if command -v "$ES_CPUGOV" >/dev/null; then
-  "$ES_CPUGOV"
+if command -v performance >/dev/null; then
+  performance
 else
-  echo "$ES_CPUGOV" > "$CPU_GOV_FILE" 2>/dev/null
+  echo performance > "$CPU_GOV_FILE" 2>/dev/null
 fi
-ES_GPUPERF=$(es_setting gpuperf)
-case "$ES_GPUPERF" in ""|auto|default) ES_GPUPERF=performance ;; esac
 if command -v gpu_performance_level >/dev/null; then
-  gpu_performance_level "$ES_GPUPERF"
+  gpu_performance_level performance
 else
-  echo "$ES_GPUPERF" > "$GPU_GOV_FILE" 2>/dev/null
+  echo performance > "$GPU_GOV_FILE" 2>/dev/null
 fi
-echo "hw: cpu=${ES_CPUGOV} gpu=${ES_GPUPERF} threads=${ES_THREADS:-all} forcepack=${ES_FORCEPACK:-off} online=$(cat /sys/devices/system/cpu/online 2>/dev/null)"
+echo "hw: cpu=performance gpu=performance online=$(cat /sys/devices/system/cpu/online 2>/dev/null)"
 echo "${POCKETMZ_SWAPPINESS:-160}" > /proc/sys/vm/swappiness 2>/dev/null
-# Thermal guard: sustained load would reach the 95 C hardware shutdown (instant reset).
-# Use the system one when it runs, else run ours for the duration of the game.
-if ! systemctl -q is-active gkd-thermal && [ -x "$PMZ/gkd-thermal" ]; then
-  systemd-run --unit=pocketmz-thermal --collect --quiet "$PMZ/gkd-thermal" run && OWN_THERMAL=1 && ts "thermal guard started"
-fi
 
 export POCKETMZ_SRC="$SRC" POCKETMZ_GAME="$RZ/games/$ID/game" POCKETMZ_RENDER_SCALE="${POCKETMZ_RENDER_SCALE:-auto}"
 if [ -n "$MENU" ]; then
@@ -497,24 +414,11 @@ NW_ARGS="--no-sandbox --ozone-platform=wayland --ignore-gpu-blocklist --enable-g
 JS_EXTRA="$POCKETMZ_JS_FLAGS"; [ -f "$RZ/js-flags" ] && JS_EXTRA="$JS_EXTRA $(cat "$RZ/js-flags")"
 echo "args: $(echo $NW_ARGS)"
 
-# Handheld integration (same as runemu does for emulators):
-# - L1+Select+Start (system input_sense) force-quits the process named in /tmp/.process-kill-data
-# - L1+X shows the guide that game-guides-tool picks for this game
-# - "hold F2" hotkeys: pocketmz-hotkeys.py reads the pad and talks to PocketMZ_Menu.js
-HK_PID=""
-if [ -z "$MENU" ]; then
-  command -v set_kill >/dev/null && set_kill set "-9 nw"
-  [ -x /usr/bin/game-guides-tool ] && [ -n "$L" ] && /usr/bin/game-guides-tool "$L" >/dev/null 2>&1
-  if [ "${POCKETMZ_HOTKEYS:-1}" = 1 ] && [ -f "$PMZ/pocketmz-hotkeys.py" ]; then
-    POCKETMZ_TITLE="$(basename "${L:-$SRC}" .rpgmz)" python3 "$PMZ/pocketmz-hotkeys.py" &
-    HK_PID=$!
-  fi
-fi
+# Pass-through controls for NW.js (α fallback): -hotkey guide avoids swallowing Select (Shift)
+# so Select+X (menu) and Select+Start (quit) are handled directly by PocketMZ_Menu.js.
 ts "nw start"
 "$PMZ/pocketmz-chroot.sh" run /opt/nwjs/nw $NW_ARGS "--js-flags=--max-old-space-size=256 --expose-gc $JS_EXTRA" /game
 ts "nw exit $?"
-[ -n "$HK_PID" ] && kill "$HK_PID" 2>/dev/null
-[ -z "$MENU" ] && command -v set_kill >/dev/null && set_kill stop
 
 if [ -f "$CG/memory.events" ]; then
   OOM_AFTER=$(sed -n 's/^oom_kill //p' "$CG/memory.events")

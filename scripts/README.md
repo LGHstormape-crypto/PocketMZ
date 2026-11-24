@@ -1,91 +1,42 @@
-# PocketMZ
+# PocketMZ Port 版使用手册
 
-在掌机（GKD Mini Plus / ROCKNIX）上运行 RPG Maker MV/MZ 游戏的运行环境：NW.js（arm64，Debian 运行环境）加上针对 1 GB 内存和 RK3566 的运行时补丁。游戏本体不包含在内，需要自己放入；游戏文件从不被修改。MIT 许可证。
+面向 PortMaster / ROCKNIX 掌机的 RPG Maker MV / MZ 运行器。**默认采用 β 轻量运行时（`auto` 优先进 β，不兼容游戏自动回退 NW.js）**，原游戏文件夹只读不写。
 
-（PocketMZ 是独立项目，与 KADOKAWA / Gotcha Gotcha Games 无关；RPG Maker 是其商标。）
+## 1. 安装方法
 
-## 前提
+1. 解压 `PocketMZ-ports-*.zip`，把 `PocketMZ.sh` 和 `PocketMZ/` 两个文件/文件夹一起放进内存卡 `roms/ports/`。
+2. 把游戏文件夹放进内存卡 `roms/rpgmaker/`（可建子文件夹分类，最多 4 层）：
+   - **MZ**：目录内须有 `index.html` + `js/rmmz_core.js`。
+   - **MV**：目录内须有 `package.json` + `www/index.html` + `www/js/rpg_core.js`。
+   - 若游戏为单 `Game.exe` 打包版，先在电脑双击 `tools/PocketMZ转换器.bat` 解包后再拷入掌机。
+3. 在掌机 **Ports → PocketMZ** 启动（首次会自动解包安装到 `/storage/pocketmz` 并保留已有存档）。
 
-- 默认运行时（NW.js）要求 GPU 驱动为 **panfrost**：ES → 系统设置 → GPU DRIVER → panfrost，然后重启（libmali 下浏览器拿不到 WebGL）。
-- 如果安装了实验性 **β 运行时**并在设置或游戏内 F2 菜单中选择 `β` 或「自动」，则可在闭源 **libmali** 驱动下直接运行（启动器会自动直通宿主 GL 库）。
+## 2. 首次启动说明
 
-## 添加游戏
+每个游戏**首次启动**都需要自动生成精简副本、裁剪字体与预处理大图/APNG 缓存，依游戏体积可能需要 **几十秒到 1～3 分钟**，期间请勿强行关机；从**第二次启动开始**即可数秒进入。
 
-1. 把游戏文件夹放进 `/storage/roms/rpgmaker/`（卡上的 `roms/rpgmaker`）。文件夹里要有 `index.html`（MZ），或者 `package.json` + `www/index.html`（MV）。可以连同外层文件夹一起放，最多 4 层。
-2. 扫描：ES → Tools →「Scan PocketMZ Games」（或运行 `/storage/pocketmz/pocketmz-scan.sh`）。
-3. 启动：
-   - 装了 ES 系统「RPGMZ」（系统已集成，或安装时用了 `--es`）：游戏列在「RPGMZ」下，模拟器是 PocketMZ，名字取游戏标题。
-   - 没装：游戏列在 Ports 里。
+## 3. 存档位置
 
-`/storage/roms/easyrpg/` 也会被扫描；里面的 RPG Maker 2000/2003 游戏（EasyRPG）不受影响。
+- 全部存档保存在 **`roms/savestates/rpgmz/<游戏ID>/save/`**（β 与 NW.js 通用）。
+- 启动前若存档有变化，自动在 **`roms/savestates/rpgmz/<游戏ID>/save-backups/`** 保留最近 5 份备份。
+- 在启动器按 `Start → 存档 → 导出全部存档` 可备份到 `roms/pocketmz-saves/`。
 
-## 按键
+## 4. 按键与菜单
+
+- **`Select + X`**：打开 / 关闭游戏内 PocketMZ 菜单（30/60 帧、加速、音量、渲染缩放、平滑画面、自动保存/加载、β/NW.js 切换、按键映射、恢复存档备份、退出）。
+- **`Select + Start`**：退出游戏回到列表。
 
 | 掌机 | 游戏 |
 |---|---|
-| A | 确定 |
-| B | 取消 / 菜单 |
-| X | D 键 |
-| Y / Select | Shift（冲刺） |
-| L1 / R1 | 翻页 |
-| L2 / R2 | S / A 键（很多游戏的快进 / 自动） |
+| A / B | 确定 / 取消与系统菜单 |
+| X / Y | D 键 / Shift（冲刺） |
+| Select / Start | Shift（冲刺）/ Esc（系统菜单） |
+| L1 / R1 | 上一页 / 下一页 |
+| L2 / R2 | S / A 键 |
 | 十字键 / 左摇杆 | 方向 |
-| 右摇杆（插入式摇杆模块） / R3 / L3（机身侧键） | 鼠标指针 / 左键 / 右键（点击式界面的游戏，例如用图片按钮的 ADV） |
-| Start | 取消 / 菜单（同 B） |
+| 右摇杆 / L3 / R3 | 虚拟鼠标指针 / 右键 / 左键 |
 
-以上按键每个游戏都可以在 PocketMZ 菜单 → 按键映射 里改（立即生效，只影响这个游戏）。
+## 5. 日志与单游戏高级配置（可选）
 
-### 热键：按住 F2 再按（和本机模拟器同一套）
-
-| 组合 | 作用 |
-|---|---|
-| F2 + F1 | PocketMZ 菜单（帧率、加速、显示帧数、音量、渲染分辨率、按键映射、存档备份、退出游戏） |
-| F2 + Start | 退出游戏 |
-| F2 + Select | 回到标题画面 |
-| F2 + L3 | 打开存档画面（RPG Maker 没有即时存档） |
-| F2 + R3 | 打开读档画面 |
-| F2 + L1 | 慢动作（半速）开 / 关 |
-| F2 + R1 | 按住快进（3 倍），松开恢复 |
-| F2 + A | 暂停 / 继续 |
-| F2 + X | 截图（存到 roms/screenshots） |
-| F2 + Y | 显示 / 隐藏帧数 |
-| F2 + 上 / 下 | 调音量 |
-
-按住 F2 时游戏收不到其他按键（F2 + A 不会同时按到确定）。系统热键照常可用：L1 + Select + Start 强制退出，L1 + X 攻略。
-
-## 存档
-
-- 原游戏文件夹从不写入。每个游戏在 `/storage/pocketmz/games/<id>/game/` 有一份可写的精简副本，存档在里面的 `save/`（MV 为 `www/save/`）。
-- `<id>` 取路径里的 DLsite 编号（如 RJxxxxxxxx），没有就用文件夹名 + 校验值。游戏文件夹移动或改名后，编号不变的游戏存档还在；其他游戏会被当成新游戏。
-- 第一次启动时，会把原文件夹里已有的存档复制到副本里。
-
-## 设置（游戏内 选项）
-
-- 「画面フレームレート」：30 / 60。默认 30，省电、发热小；画面动作多的游戏可改 60。
-
-## 单个游戏的设置（可选）
-
-- `/storage/pocketmz/games/<id>/pocketmz.gptk`：这个游戏用自己的按键映射（格式同 `/storage/pocketmz/pocketmz.gptk`）。
-- `/storage/pocketmz/games/<id>/env`：启动参数，例如 `POCKETMZ_MEM_MAX=700`（内存上限 MB）、`POCKETMZ_STOP_ES=1`（运行时关掉 ES，多省约 50 MB）、`POCKETMZ_RENDER_SCALE=off`（关闭"按屏幕分辨率渲染"，默认开启：高分辨率游戏按掌机屏幕大小绘制，省 GPU）。
-
-## 选择运行时（NW.js / β / 自动）
-
-- 游戏内：按住 F2 再按 F1 打开 PocketMZ 菜单，「运行时」一项在 NW.js / β / 自动 之间切换（只对这个游戏，写进副本的 `pocketmz.json` 的 `"runtime"`），下次启动游戏生效；菜单下方小字显示「当前：…」。β 没装时选 β 或自动，会提示「β 未安装，将使用 NW.js」，实际仍用 NW.js。
-- 全局默认：设置（PocketMZ 选择界面）→「游戏默认设置」→「游戏运行时」，写进 `settings.json` 的 `"runtime"`；没有单独设置的游戏用它。
-- 优先级：环境变量 `POCKETMZ_GAME_RUNTIME`（含 `games/<id>/env`）> 游戏的 `pocketmz.json` > 全局 `settings.json` > `nw`。
-- `auto` = 用 β，除非游戏被标记为「β 不兼容」（`games/<id>/beta-status.json`），β 启动失败时同一次启动里自动改用 NW.js。
-
-## 维护
-
-- 打包整套运行环境（重刷系统后恢复用）：`/storage/pocketmz/pocketmz-bundle.sh` → `/storage/pocketmz-bundle-<日期>.tar`（精简打包约 181 MB）。
-- 可选的 β 运行时（实验性，默认仍用 NW.js）：`pocketmz-bundle.sh --beta` 把约 43 MB 的 `beta-runtime.sqfs` 和 `beta/*.sh` 一起打进安装包（α + β 合包约 224 MB）；在游戏内 F2 菜单的「运行时」或「游戏默认设置」里选 `β` 或「自动」才会用。
-- 安装 / 更新：`mkdir /storage/pocketmz-new && tar -xf pocketmz-bundle-<日期>.tar -C /storage/pocketmz-new && sh /storage/pocketmz-new/pocketmz-install.sh`。已有的存档保留。
-  在原版 ROCKNIX 上加 `--es`（`sh .../pocketmz-install.sh --es`），会同时在 ES 里加「RPGMZ」系统和 Tools 里的扫描项；系统镜像已集成时不用加。
-- 卸载：`/storage/pocketmz/pocketmz-uninstall.sh` 先显示会做什么，加 `--yes` 才执行。所有存档会先复制到 `/storage/pocketmz-saves-<日期>/`。
-- 日志：`/storage/pocketmz/games/<id>/run.log`。
-
-## 已知限制
-
-- 使用 NW.js 运行时启动到标题约 27～33 秒（大部分是浏览器本身的启动）；实验性 β 运行时启动约 2～10 秒，内存峰值低约 150～280 MB，已原生支持 `.m4a/.mp3/.wav` 音频与 `<video>` 视频播放；仅少数使用动图 `.gif` 或特殊浏览器 DOM/表单特性的游戏会在「自动」模式下自动退回 NW.js。
-- MV 与 MZ 游戏均已有实机测试与运行时优化（渲染缩放、大图缩小缓存、窗口按显示比例绘制、BGM 流式播放、内存泄漏修复、F2 菜单与 β 运行时支持），但部分重负载插件游戏在战斗时仍可能只有 20 帧左右。
-- 内存不足时只有游戏会被关掉（会弹出提示），不会拖死整机。
+- 运行日志：`/storage/pocketmz/games/<游戏ID>/run.log`
+- 可选环境变量文件 `/storage/pocketmz/games/<游戏ID>/env`：例如 `POCKETMZ_MEM_MAX=700`、`POCKETMZ_STOP_ES=1`、`POCKETMZ_RENDER_SCALE=off`、`POCKETMZ_GAME_RUNTIME=nw|beta|auto`。

@@ -840,7 +840,7 @@ function watchUserGptk() {
 }
 
 const keySources = new Map();   // keyCode -> Set of sources holding it (a key is down while any source holds it)
-let f2Held = false;
+const btnDown = new Set();      // currently held gamepad button names (Select+X / Select+Start combos)
 const stick = { up: false, down: false, left: false, right: false };
 const rstick = { up: false, down: false, left: false, right: false };
 const trig = { lefttrigger: false, righttrigger: false };
@@ -937,7 +937,7 @@ function stepVirtualMouse(now) {
     if (vmouse.left || vmouse.right) releaseAllMouse();
     return;
   }
-  if (rightStickMode !== 'mouse' || f2Held || dt <= 0) return;
+  if (rightStickMode !== 'mouse' || dt <= 0) return;
   const nx = vmouse.rx / 32767, ny = vmouse.ry / 32767;
   const mag = Math.hypot(nx, ny);
   const DZ = 0.22;
@@ -976,33 +976,47 @@ function sdlKeyToJs(sym) {
   if (sym >= 0x4000003A && sym <= 0x40000045) return 112 + sym - 0x4000003A;   // F1..F12
   return 0;
 }
-function setF2(down) {
-  if (down === f2Held) return; f2Held = down;
-  if (down) { releaseAllKeys(); releaseAllMouse(); }   // the game must not see anything while F2 is held (F2+A is a hotkey, not OK)
+function quitCombo() { if (PLAY && !NOQUIT) requestQuit('Select+Start'); else log('INPUT: Select+Start (ignored in ' + (PLAY ? 'PMZ_NOQUIT' : 'test') + ' mode)'); }
+function toggleMenuCombo() {
+  if (!PLAY) return;
+  const menuApi = globalThis.PMZ_MENU || (globalThis.window && globalThis.window.PMZ_MENU);
+  if (menuApi && typeof menuApi.command === 'function') {
+    try { menuApi.command('menu'); } catch (e) {}
+  }
 }
-function quitCombo() { if (PLAY && !NOQUIT) requestQuit('F2+Start'); else log('INPUT: F2+Start (ignored in ' + (PLAY ? 'PMZ_NOQUIT' : 'test') + ' mode)'); }
 function handleInput(e) {
   switch (e.type) {
     case 'controlleradded': log('INPUT: controller added ' + e.name); return;
-    case 'controllerremoved': log('INPUT: controller removed'); return;
+    case 'controllerremoved': btnDown.clear(); log('INPUT: controller removed'); return;
     case 'buttondown': case 'buttonup': {
       const down = e.type === 'buttondown', b = e.button;
-      if (b === 'guide') return setF2(down);                         // F2 = SDL "guide" (gptokeyb -hotkey guide)
-      if (f2Held) { if (down && b === 'start') quitCombo(); inputStats.swallowed++; return; }
+      if (down) {
+        btnDown.add(b);
+        if ((b === 'start' && btnDown.has('back')) || (b === 'back' && btnDown.has('start'))) {
+          releaseAllKeys(); releaseAllMouse();
+          quitCombo();
+          return;
+        }
+        if ((b === 'x' && btnDown.has('back')) || (b === 'back' && btnDown.has('x'))) {
+          releaseAllKeys(); releaseAllMouse();
+          toggleMenuCombo();
+          return;
+        }
+      } else {
+        btnDown.delete(b);
+      }
       handleMapped(b, down);
       return; }
     case 'axis': {
       const v = e.value, a = e.axis;
       if (a === 'lefttrigger' || a === 'righttrigger') {
         const on = trig[a] ? v > 8000 : v > 16000; if (on === trig[a]) return; trig[a] = on;
-        if (f2Held) { inputStats.swallowed++; return; }
         handleMapped(a, on); return;
       }
       if (a === 'leftx' || a === 'lefty') {
         const neg = a === 'leftx' ? 'left' : 'up', pos = a === 'leftx' ? 'right' : 'down';   // dead zone: on at 50 %, off at 35 % (hysteresis)
         for (const [dir, active] of [[neg, v < -(stick[neg] ? 11500 : 16384)], [pos, v > (stick[pos] ? 11500 : 16384)]]) {
           if (active === stick[dir]) continue; stick[dir] = active;
-          if (f2Held) continue;
           const k = inputMap['stick:' + dir]; if (k) (active ? keyPress : keyRelease)('stick:' + dir, k);
         }
         return;
@@ -1013,7 +1027,6 @@ function handleInput(e) {
           const neg = a === 'rightx' ? 'left' : 'up', pos = a === 'rightx' ? 'right' : 'down';
           for (const [dir, active] of [[neg, v < -(rstick[neg] ? 11500 : 16384)], [pos, v > (rstick[pos] ? 11500 : 16384)]]) {
             if (active === rstick[dir]) continue; rstick[dir] = active;
-            if (f2Held) continue;
             const k = rightStickMap[dir]; if (k) (active ? keyPress : keyRelease)('rstick:' + dir, k);
           }
         }
@@ -1021,29 +1034,26 @@ function handleInput(e) {
       }
       return; }
     case 'mousemove': {
-      if (!f2Held && !isMenuOpen()) moveMouseTo(e.x, e.y, nowMs(), false);
+      if (!isMenuOpen()) moveMouseTo(e.x, e.y, nowMs(), false);
       return; }
     case 'mousedown': case 'mouseup': {
       const down = e.type === 'mousedown';
       const which = e.button === 1 ? 'left' : e.button === 3 ? 'right' : null;
       if (!which) return;
-      if (f2Held) { inputStats.swallowed++; return; }
       if (down && !isMenuOpen()) moveMouseTo(e.x, e.y, nowMs(), false);
       (down ? mousePress : mouseRelease)('sdlmouse:' + which, which);
       return; }
     case 'wheel': {
-      if (f2Held || isMenuOpen()) return;
+      if (isMenuOpen()) return;
       fireMouse('wheel', 0, { deltaX: -(e.dx || 0) * 40, deltaY: -(e.dy || 0) * 40, wheelDelta: (e.dy || 0) * 120 });
       return; }
     case 'keydown': case 'keyup': {
       const down = e.type === 'keydown'; if (e.repeat) return;
-      if (e.keycode === 0x4000003B) return setF2(down);               // keyboard F2
-      if (f2Held) { inputStats.swallowed++; return; }
       const k = sdlKeyToJs(e.keycode); if (k) (down ? keyPress : keyRelease)('key:' + e.keycode, k);
       return; }
   }
 }
-// play mode: leave after F2+Start / window close; saves in flight (async pako + file write) are finished first
+// play mode: leave after Select+Start / window close; saves in flight (async pako + file write) are finished first
 let pendingSaves = 0, quitting = false;
 async function requestQuit(why) {
   if (quitting) return; quitting = true; log('QUIT requested: ' + why);
@@ -1428,14 +1438,14 @@ function guardBoot() {
 async function playDrive() {
   if (GUARD) guardBoot();
   await until(() => typeof SceneManager !== 'undefined' && SceneManager._scene, 120000, 'first scene');
-  log('PLAY: first scene ' + SceneManager._scene.constructor.name + ', saves in ' + SAVE_DIR + '; quit with F2+Start');
+  log('PLAY: first scene ' + SceneManager._scene.constructor.name + ', saves in ' + SAVE_DIR + '; quit with Select+Start');
   if (proc.env.PMZ_PROFLOG === '1') profLoop().catch(e => log('profLoop failed', e && e.stack));
   if (proc.env.PMZ_PLAYSELFTEST === '1') {   // self-ending check of the play-mode quit path (needs SAVE_DIR: never the real save dir)
     if (!proc.env.SAVE_DIR) { log('PLAYSELFTEST needs SAVE_DIR'); return finish(2); }
     setTimeout(() => { log('PLAYSELFTEST watchdog'); finish(9); }, 60000);
     await until(sceneActive(Scene_Title), 60000, 'Scene_Title'); await sleep(1500);
-    ConfigManager.save(); handleInput({ type: 'buttondown', button: 'guide' }); handleInput({ type: 'buttondown', button: 'start' });   // save in flight + F2+Start
-    log('PLAYSELFTEST: F2+Start injected, pendingSaves ' + pendingSaves);
+    ConfigManager.save(); handleInput({ type: 'buttondown', button: 'back' }); handleInput({ type: 'buttondown', button: 'start' });   // save in flight + Select+Start
+    log('PLAYSELFTEST: Select+Start injected, pendingSaves ' + pendingSaves);
   }
 }
 
@@ -1533,12 +1543,11 @@ async function inputTestStage() {
   const upStill = Input.isPressed('up'); handleInput({ type: 'axis', axis: 'lefty', value: 0 }); await sleep(100);
   check('shared key stays down until the last source is released', upStill && !Input.isPressed('up'));
   await sleep(600);
-  // 4. F2 swallows other buttons (F2+A must not press OK); keyboard F2 too
-  handleInput({ type: 'buttondown', button: 'guide' }); await sleep(100);
-  handleInput({ type: 'buttondown', button: 'a' }); await sleep(150); const okDuringF2 = Input.isPressed('ok'); handleInput({ type: 'buttonup', button: 'a' });
-  handleInput({ type: 'buttondown', button: 'start' }); await sleep(100); handleInput({ type: 'buttonup', button: 'start' });   // F2+Start: only logged in test mode
-  handleInput({ type: 'buttonup', button: 'guide' }); await sleep(100);
-  check('F2+A does not press OK; F2+Start does not quit in test mode', !okDuringF2 && sceneName() === 'Scene_Map', { swallowed: inputStats.swallowed });
+  // 4. Select+Start does not quit in test mode
+  handleInput({ type: 'buttondown', button: 'back' }); await sleep(100);
+  handleInput({ type: 'buttondown', button: 'start' }); await sleep(100); handleInput({ type: 'buttonup', button: 'start' });
+  handleInput({ type: 'buttonup', button: 'back' }); await sleep(100);
+  check('Select+Start does not quit in test mode', sceneName() === 'Scene_Map');
   // 5. B (esc) opens the menu, B closes it; Start does too; keyboard Escape works
   const menuCycle = async (open, close, label) => {
     await until(() => SceneManager._scene instanceof Scene_Map && SceneManager._scene.isActive() && !SceneManager.isSceneChanging(), 10000, 'map before ' + label);

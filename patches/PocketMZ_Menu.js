@@ -1,17 +1,12 @@
 /*:
  * @target MZ
- * @plugindesc PocketMZ in-game menu (F2 + F1) and "hold F2" hotkeys: pause, frame rate, speed, FPS, volume, key mapping, save backups (load last).
+ * @plugindesc PocketMZ in-game menu (Select + X): frame rate, speed, FPS, volume, render scale, smooth scaling, runtime switch, key mapping, save backups.
  * @author PocketMZ (MIT)
  *
  * @help
  * Runs on RPG Maker MZ and MV (checks Utils.RPGMAKER_NAME itself). Loaded after all other plugins.
- * F2 + F1 (the handheld's unified hotkeys, read by pocketmz-hotkeys.py) opens an HTML layer over the
- * canvas; the game is paused while it is open and gets no keys. Items: frame rate 30/60,
- * speed 1x-3x (this session only), FPS display, master volume, render scale (next start),
- * key mapping of the pad (written to pocketmz.gptk, applied at once), save backups, quit.
- * Settings are saved in pocketmz.json of the thin copy (the original game is never written).
- * Hold F2: F1 menu, Start quit, Select title, L3 save screen, R3 load screen, L1 slow motion,
- * R1 fast forward (held), A pause, X screenshot, Y FPS, up/down volume.
+ * Select + X opens an HTML layer over the canvas; the game is paused while it is open and gets no keys.
+ * Select + Start quits the game. Settings are saved in pocketmz.json of the thin copy (never writes the original game folder).
  */
 
 (() => {
@@ -19,11 +14,8 @@
     if (!window.Utils || !(Utils.RPGMAKER_NAME === "MZ" || Utils.RPGMAKER_NAME === "MV")) return;
     const IS_MZ = Utils.RPGMAKER_NAME === "MZ";
 
-    // In-game PocketMZ menu (F2 + F1). An HTML layer
-    // over the canvas; the game is paused while it is open (no updates, picture kept) and gets
-    // no keys. Live settings: frame rate 30/60, speed 1x-3x (this session only), FPS display,
-    // master volume, key mapping. Next-start settings: render scale (read by pocketmz-run.sh).
-    // Saved in the thin copy as pocketmz.json (the original game folder is never written).
+    // In-game PocketMZ menu (Select + X). An HTML layer over the canvas; the game is paused
+    // while open (no updates, picture kept) and gets no keys. Saved in pocketmz.json of the thin copy.
     const fs = window.require ? require("fs") : null;
     const path = window.require ? require("path") : null;
     const APPDIR = (typeof nw !== "undefined" && nw.__dirname) ||
@@ -34,51 +26,51 @@
     const L = ui.startsWith("ja") ? {
         title: "PocketMZ メニュー", resume: "ゲームに戻る", fps: "フレームレート", speed: "速度",
         showFps: "FPS 表示", volume: "全体音量", scale: "描画解像度", scaleAuto: "画面に合わせる",
-        scaleOff: "ゲーム本来", smooth: "画面の平滑化", autosave: "オートセーブ/ロード", runtime: "実行環境", rtAuto: "自動", rtNow: "現在：", rtNext: "次回ゲーム起動から有効", rtNoBeta: "β 未インストール：NW.js を使います", stopEs: "起動中は ES を閉じる", next: "（次回起動から）", quit: "ゲームを終了", quitAsk: "ゲームを終了しますか？（セーブしていない進行は失われます）", quitAskAuto: "ゲームを終了しますか？（現在の進行を自動保存します）", autoLoaded: "セーブを自動読み込みしました",
-        yes: "終了", no: "戻る", on: "オン", off: "オフ", hint: "F2 + F1：PocketMZ メニュー",
+        scaleOff: "ゲーム本来", smooth: "画面の平滑化", autosave: "オートセーブ/ロード", runtime: "実行環境", rtAuto: "自動（β 優先）", rtNow: "現在：", rtNext: "次回ゲーム起動から有効", rtNoBeta: "β 未インストール：NW.js を使います", stopEs: "起動中は ES を閉じる", next: "（次回起動から）", quit: "ゲームを終了", quitAsk: "ゲームを終了しますか？（セーブしていない進行は失われます）", quitAskAuto: "ゲームを終了しますか？（現在の進行を自動保存します）", autoLoaded: "セーブを自動読み込みしました",
+        yes: "終了", no: "戻る", on: "オン", off: "オフ", hint: "Select + X：PocketMZ メニュー",
         keys: "↑↓ 選択 · ←→ 変更 · A 決定 · B 戻る",
         backups: "セーブのバックアップ", noBackups: "バックアップはまだありません（ゲーム起動時に自動で作られます）",
         files: n => n + " ファイル", restoreAsk: t => t + " のセーブに戻しますか？（今のセーブも先にバックアップします）",
         restore: "戻す", restored: "セーブを戻しました。タイトル画面に戻ります。", failed: "失敗しました：", ok: "OK",
         prebuild: "画像の事前処理（一回だけ）", prebuildNote: "大きな画像を画面サイズで保存し、次からの読み込みを速く・軽くします。ゲームは一時停止のまま。", prebuildRun: n => "処理中… " + n, prebuildDone: r => "完了：" + r.built + " 作成、" + r.skipped + " 済み、" + r.failed + " 失敗", prebuildNone: "このゲームには不要です（画像が小さい）",
-        keymap: "キー割り当て", note1: "変更はすぐ反映されます（このゲームだけ）。", note2: "F2 + F1 でこのメニューを開きます。",
+        keymap: "キー割り当て", note1: "変更はすぐ反映されます（このゲームだけ）。", note2: "Select + X でこのメニューを開きます。",
         stick: "右スティック", mouseSpd: "マウス速度", spSlow: "遅い", spNormal: "標準", spFast: "速い", dpad: "十字キー / 左スティック", select: "Select", start: "Start",
         stickMouse: "マウスポインタ", stickArrows: "矢印キー", none: "なし", arrows: "矢印キー",
-        f2Note: "F2 を押しながら：ホットキー（F2+F1 メニュー、F2+Start 終了）",
+        f2Note: "Select + X：メニュー · Select + Start：終了",
         reset: "初期設定に戻す", resetAsk: "キー割り当てを初期設定に戻しますか？", resetYes: "戻す",
         km: { enter: "決定", esc: "キャンセル/メニュー", shift: "ダッシュ", pageup: "前のページ", pagedown: "次のページ",
               z: "決定", x: "キャンセル", space: "決定", mouse_left: "マウス左", mouse_right: "マウス右", nothing: "なし" }
     } : ui.startsWith("en") ? {
         title: "PocketMZ menu", resume: "Resume", fps: "Frame rate", speed: "Speed",
         showFps: "Show FPS", volume: "Master volume", scale: "Render resolution", scaleAuto: "Screen size",
-        scaleOff: "Game size", smooth: "Smooth scaling", autosave: "Auto save / load", runtime: "Runtime", rtAuto: "Auto", rtNow: "Now: ", rtNext: "Takes effect at the next game start", rtNoBeta: "β is not installed: NW.js will be used", stopEs: "Close ES while playing", next: " (next start)", quit: "Quit game", quitAsk: "Quit the game? (Unsaved progress is lost)", quitAskAuto: "Quit the game? (Current progress will be auto-saved)", autoLoaded: "Auto-loaded save",
-        yes: "Quit", no: "Back", on: "On", off: "Off", hint: "F2 + F1: PocketMZ menu",
+        scaleOff: "Game size", smooth: "Smooth scaling", autosave: "Auto save / load", runtime: "Runtime", rtAuto: "Auto (β default)", rtNow: "Now: ", rtNext: "Takes effect at the next game start", rtNoBeta: "β is not installed: NW.js will be used", stopEs: "Close ES while playing", next: " (next start)", quit: "Quit game", quitAsk: "Quit the game? (Unsaved progress is lost)", quitAskAuto: "Quit the game? (Current progress will be auto-saved)", autoLoaded: "Auto-loaded save",
+        yes: "Quit", no: "Back", on: "On", off: "Off", hint: "Select + X: PocketMZ menu",
         keys: "↑↓ Select · ←→ Change · A OK · B Back",
         backups: "Save backups", noBackups: "No backups yet (made automatically when the game starts)",
         files: n => n + " files", restoreAsk: t => "Restore the saves from " + t + "? (The current saves are backed up first)",
         restore: "Restore", restored: "Saves restored. Back to the title screen.", failed: "Failed: ", ok: "OK",
         prebuild: "Precompile images (once)", prebuildNote: "Saves big images at screen size so later loads are faster and lighter. The game stays paused.", prebuildRun: n => "Working… " + n, prebuildDone: r => "Done: " + r.built + " made, " + r.skipped + " already there, " + r.failed + " failed", prebuildNone: "Not needed for this game (small images)",
-        keymap: "Key mapping", note1: "Changes take effect at once (this game only).", note2: "F2 + F1 opens this menu.",
+        keymap: "Key mapping", note1: "Changes take effect at once (this game only).", note2: "Select + X opens this menu.",
         stick: "Right stick", mouseSpd: "Mouse speed", spSlow: "Slow", spNormal: "Normal", spFast: "Fast", dpad: "D-pad / left stick", select: "Select", start: "Start",
         stickMouse: "Mouse pointer", stickArrows: "Arrow keys", none: "Nothing", arrows: "Arrow keys",
-        f2Note: "hold F2: hotkeys (F2+F1 menu, F2+Start quit)",
+        f2Note: "Select + X: menu · Select + Start: quit",
         reset: "Restore defaults", resetAsk: "Restore the default key mapping?", resetYes: "Restore",
         km: { enter: "OK", esc: "Cancel/Menu", shift: "Dash", pageup: "Prev page", pagedown: "Next page",
               z: "OK", x: "Cancel", space: "OK", mouse_left: "Mouse left", mouse_right: "Mouse right", nothing: "Nothing" }
     } : {
         title: "PocketMZ 菜单", resume: "继续游戏", fps: "帧率", speed: "加速",
         showFps: "显示帧数", volume: "总音量", scale: "渲染分辨率", scaleAuto: "按屏幕",
-        scaleOff: "游戏原始", smooth: "平滑画面", autosave: "自动保存/加载", runtime: "运行时", rtAuto: "自动", rtNow: "当前：", rtNext: "下次启动游戏生效", rtNoBeta: "β 未安装，将使用 NW.js", stopEs: "运行时关闭 ES（省内存）", next: "（下次启动生效）", quit: "退出游戏", quitAsk: "退出游戏？（没存档的进度会丢失）", quitAskAuto: "退出游戏？（将自动保存当前进度）", autoLoaded: "已自动加载存档",
-        yes: "退出", no: "返回", on: "开", off: "关", hint: "F2 + F1：PocketMZ 菜单",
+        scaleOff: "游戏原始", smooth: "平滑画面", autosave: "自动保存/加载", runtime: "运行时", rtAuto: "自动（默认 β）", rtNow: "当前：", rtNext: "下次启动游戏生效", rtNoBeta: "β 未安装，将使用 NW.js", stopEs: "运行时关闭 ES（省内存）", next: "（下次启动生效）", quit: "退出游戏", quitAsk: "退出游戏？（没存档的进度会丢失）", quitAskAuto: "退出游戏？（将自动保存当前进度）", autoLoaded: "已自动加载存档",
+        yes: "退出", no: "返回", on: "开", off: "关", hint: "Select + X：PocketMZ 菜单",
         keys: "↑↓ 选择 · ←→ 调整 · A 确定 · B 返回",
         backups: "存档备份", noBackups: "还没有备份（每次启动游戏时自动备份）",
         files: n => n + " 个文件", restoreAsk: t => "恢复到 " + t + " 的存档？（当前存档会先另存一份）",
         restore: "恢复", restored: "存档已恢复，回到标题画面。", failed: "失败：", ok: "好",
         prebuild: "预处理图片（一次性）", prebuildNote: "把大图按屏幕尺寸存下来，以后载入更快、更省内存。处理时游戏保持暂停。", prebuildRun: n => "处理中… " + n, prebuildDone: r => "完成：新建 " + r.built + "，已有 " + r.skipped + "，失败 " + r.failed, prebuildNone: "这个游戏不需要（图片都不大）",
-        keymap: "按键映射", note1: "修改立即生效（仅此游戏）。", note2: "F2 + F1 打开本菜单。",
+        keymap: "按键映射", note1: "修改立即生效（仅此游戏）。", note2: "Select + X 打开本菜单。",
         stick: "右摇杆", mouseSpd: "鼠标速度", spSlow: "慢", spNormal: "标准", spFast: "快", dpad: "方向键 / 左摇杆", select: "Select", start: "Start",
         stickMouse: "鼠标指针", stickArrows: "方向键", none: "无", arrows: "方向键",
-        f2Note: "按住 F2：热键（F2+F1 菜单，F2+Start 退出）",
+        f2Note: "Select + X：菜单 · Select + Start：退出",
         reset: "恢复默认", resetAsk: "恢复默认按键映射？", resetYes: "恢复",
         km: { enter: "确定", esc: "取消/菜单", shift: "冲刺", pageup: "上一页", pagedown: "下一页",
               z: "确定", x: "取消", space: "确定", mouse_left: "鼠标左键", mouse_right: "鼠标右键", nothing: "无" }
@@ -358,7 +350,7 @@
     ];
     const fixedItems = () => [
         { label: L.dpad, v: L.arrows },
-        { label: "F1 / F2", v: L.f2Note }
+        { label: L.select + " / " + L.start, v: L.f2Note }
     ];
     const row = (box, label, on, value, cls) => {
         const r = document.createElement("div"); r.className = "row" + (on ? " sel" : "") + (cls ? " " + cls : "");
@@ -445,13 +437,9 @@
     const isOk = k => k === "Enter" || k === " ";
     const onKey = e => {
         const k = e.key === "End" ? "Escape" : e.key;   // Start sends End
-        if (!open) return;   // the menu is opened with F2 + F1 (hotkey section below)
+        if (!open) return;   // opened with Select + X
         e.preventDefault(); e.stopImmediatePropagation();
         if (e.type !== "keydown") return;
-        // F2 still held or just released: gptokeyb sends guide's key (Enter) when F2 is released
-        // without one of its own combos (F2 + F1 is ours, not gptokeyb's) - that Enter chose
-        // "Resume" and closed the menu as soon as F2 was let go
-        if (f2Held) return;
         if (page === "askQuit" || page === "askRestore" || page === "askReset") {
             const back = page === "askQuit" ? "main" : page === "askReset" ? "keymap" : "backups";
             if (k.startsWith("Arrow")) askYes = !askYes;
@@ -600,64 +588,39 @@
         }
         startAutoLoad();
     };
-    // "Hold F2" hotkeys, the handheld's unified set (same as its emulators). pocketmz-hotkeys.py
-    // (started by pocketmz-run.sh) reads the pad and sends one command per line over
-    // 127.0.0.1:9334. While F2 is held the game gets no keys, so F2 + A does not also press OK.
-    const net = window.require ? (() => { try { return require("net"); } catch (e) { return null; } })() : null;
-    let f2Held = false, f2Timer = null;
-    const HK = ui.startsWith("ja") ? { pause: "一時停止", resume: "再開", slowOn: "スロー：オン", slowOff: "スロー：オフ", ff: "早送り", shot: "スクリーンショット保存", shotFail: "スクリーンショット失敗", vol: "音量 " }
-        : ui.startsWith("en") ? { pause: "Paused", resume: "Resumed", slowOn: "Slow motion: on", slowOff: "Slow motion: off", ff: "Fast forward", shot: "Screenshot saved", shotFail: "Screenshot failed", vol: "Volume " }
-        : { pause: "暂停", resume: "继续", slowOn: "慢动作：开", slowOff: "慢动作：关", ff: "快进", shot: "截图已保存", shotFail: "截图失败", vol: "音量 " };
-    const canPush = () => SceneManager._scene && !SceneManager.isSceneChanging() && !sceneIs("Scene_Boot");
-    const hkLog = [];
+    // Universal Port combos: Select + X toggles the PocketMZ menu, Select + Start quits.
+    // On β, beta/pmzrun.js invokes PMZ_MENU.command("menu") directly; on NW.js, poll W3C Gamepad API.
     const command = line => {
-        hkLog.push(line); if (hkLog.length > 40) hkLog.shift();
-        const [cmd, arg] = line.split(" ");
-        if (cmd === "f2") {
-            clearTimeout(f2Timer);
-            if (arg === "1") { f2Held = true; if (window.Input) Input.clear(); }
-            else f2Timer = setTimeout(() => { f2Held = false; }, 250);   // keys gptokeyb may send on release
-            return;
-        }
-        if (cmd === "menu") { if (open) hide(); else show(); return; }
-        if (cmd === "quit") { quitGame(); return; }
-        if (cmd === "ff0") { ff = false; return; }
-        if (cmd === "shot") { toast(arg ? HK.shot : HK.shotFail); return; }
-        if (open) return;                                   // the rest only while playing
-        if (cmd === "pause") { paused = !paused; toast(paused ? HK.pause : HK.resume); }
-        else if (cmd === "slow") { slow = !slow; toast(slow ? HK.slowOn : HK.slowOff); }
-        else if (cmd === "ff1") { ff = true; toast(HK.ff); }
-        else if (cmd === "fps") { set.showFps = !set.showFps; save("showFps"); fpsTick(); }
-        else if (cmd === "vol+" || cmd === "vol-") {
-            set.volume = Math.max(0, Math.min(100, set.volume + (cmd === "vol+" ? 10 : -10)));
-            applyVolume(); save("volume"); toast(HK.vol + set.volume + "%");
-        }
-        else if (cmd === "title") { if (canPush() && !sceneIs("Scene_Title")) { paused = false; SceneManager.goto(Scene_Title); } }
-        else if (cmd === "save") { if (canPush() && sceneIs("Scene_Map") && !$gameParty.inBattle()) { paused = false; SceneManager.push(Scene_Save); } }
-        else if (cmd === "load") { if (canPush() && !sceneIs("Scene_Load")) { paused = false; SceneManager.push(Scene_Load); } }
+        const [cmd] = String(line || "").split(" ");
+        if (cmd === "menu") { if (open) hide(); else show(); }
+        else if (cmd === "quit") { quitGame(); }
     };
-    if (net) {
-        let buf = "";
-        const connect = () => {
-            const sock = net.connect(9334, "127.0.0.1");
-            sock.setEncoding("utf8");
-            sock.on("data", d => {
-                buf += d;
-                let i;
-                while ((i = buf.indexOf("\n")) >= 0) {
-                    const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-                    if (line) try { command(line); } catch (e) { console.error("PocketMZ hotkey", line, e); }
-                }
-            });
-            sock.on("error", () => {});
-            sock.on("close", () => { f2Held = false; buf = ""; setTimeout(connect, 2000); });
-        };
-        connect();
+    if (!window.pmz && navigator && typeof navigator.getGamepads === "function") {
+        let prevMenuCombo = false, prevQuitCombo = false;
+        setInterval(() => {
+            let pads;
+            try { pads = navigator.getGamepads(); } catch (e) { return; }
+            if (!pads) return;
+            let menuCombo = false, quitCombo = false;
+            for (let i = 0; i < pads.length; i++) {
+                const g = pads[i];
+                if (!g || !g.buttons || g.buttons.length < 10) continue;
+                const sel = !!(g.buttons[8] && g.buttons[8].pressed);
+                if (!sel) continue;
+                if (g.buttons[9] && g.buttons[9].pressed) quitCombo = true;
+                if (g.buttons[2] && g.buttons[2].pressed) menuCombo = true;
+            }
+            if (quitCombo && !prevQuitCombo) {
+                if (window.Input) Input.clear();
+                quitGame();
+            } else if (menuCombo && !prevMenuCombo) {
+                if (window.Input) Input.clear();
+                command("menu");
+            }
+            prevQuitCombo = quitCombo;
+            prevMenuCombo = menuCombo;
+        }, 80);
     }
-    // F2 held: the game gets no keys (key-ups pass, so nothing stays pressed)
-    window.addEventListener("keydown", e => {
-        if (f2Held && !open) { e.preventDefault(); e.stopImmediatePropagation(); }
-    }, true);
 
-    window.PMZ_MENU = { show, hide, settings: set, command, state: () => ({ open, paused, slow, ff, f2Held, speed, log: hkLog.join(",") }) };
+    window.PMZ_MENU = { show, hide, settings: set, command, state: () => ({ open, paused, slow, ff, speed }) };
 })();

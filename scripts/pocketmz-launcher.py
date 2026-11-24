@@ -88,16 +88,16 @@ I18N = {
         "empty": "没有找到游戏。把 RPG Maker MV/MZ 游戏文件夹放进 roms/rpgmaker，按 Start 扫描游戏。",
         "err": "读取游戏列表失败：",
         "scanning": "正在查找游戏…",
-        "del_ask": lambda t: "删除「%s」？\n会删除原游戏文件夹、ES 映射和运行副本。" % t,
+        "del_ask": lambda t: "删除「%s」？\n会删除原游戏文件夹和运行副本。" % t,
         "del_keep": "删游戏(保留存档)", "del_all": "连存档彻底删除",
         "del_all_confirm": lambda t: "确定连同「%s」的存档一起彻底删除？此操作无法恢复！" % t,
         "deleting": "正在删除…",
-        "settings": "设置", "scan": "扫描游戏", "defaults": "游戏默认设置", "saves": "存档",
+        "settings": "设置", "scan": "刷新游戏列表", "defaults": "游戏默认设置", "saves": "存档",
         "runtime": "运行环境", "about": "关于", "exit": "返回游戏列表",
         "hint": "A 确定  B 返回", "hint_cycle": "左右 修改  A 切换  B 返回",
-        "d_fps": "默认帧率", "d_scale": "渲染缩放", "d_smooth": "平滑游戏（双线性过滤）", "d_stopes": "运行时关闭 ES", "d_runtime": "游戏运行时（下次启动生效）", "rt_auto": "自动",
+        "d_fps": "默认帧率", "d_scale": "渲染缩放", "d_smooth": "平滑游戏（双线性过滤）", "d_stopes": "运行时关闭 ES", "d_runtime": "游戏运行时（下次启动生效）", "rt_auto": "自动（默认 β）",
         "scale_auto": "自动缩小", "scale_off": "原生分辨率", "on": "开", "off": "关",
-        "d_note": "只对没有单独设置的游戏生效；游戏内菜单 (F2+F1) 或 ES 高级设置可覆盖",
+        "d_note": "只对没有单独设置的游戏生效；游戏内菜单 (Select+X) 可单独覆盖",
         "s_export": "导出全部存档", "s_clean": "清理游戏副本缓存",
         "r_info": "信息", "r_update": "检查更新包", "r_uninstall": "卸载 PocketMZ",
         "working": "请稍候…", "checking": "正在检查…", "installing": "正在安装…",
@@ -125,16 +125,16 @@ I18N = {
         "empty": "ゲームが見つかりません。roms/rpgmaker にゲームを入れて Start でスキャンしてください。",
         "err": "ゲーム一覧の読み込みに失敗しました：",
         "scanning": "ゲームを探しています…",
-        "del_ask": lambda t: "「%s」を削除しますか？\nゲーム本体・ES 項目・コピーを削除します。" % t,
+        "del_ask": lambda t: "「%s」を削除しますか？\nゲーム本体とコピーを削除します。" % t,
         "del_keep": "ゲーム削除(セーブ残す)", "del_all": "セーブも含め完全削除",
         "del_all_confirm": lambda t: "「%s」のセーブデータも完全に削除しますか？元に戻せません！" % t,
         "deleting": "削除中…",
-        "settings": "設定", "scan": "ゲームをスキャン", "defaults": "ゲームの既定設定", "saves": "セーブデータ",
+        "settings": "設定", "scan": "リスト更新", "defaults": "ゲームの既定設定", "saves": "セーブデータ",
         "runtime": "実行環境", "about": "このアプリについて", "exit": "ゲーム一覧に戻る",
         "hint": "A 決定  B 戻る", "hint_cycle": "左右 変更  A 切替  B 戻る",
-        "d_fps": "既定フレームレート", "d_scale": "描画スケール", "d_smooth": "画面の平滑化（バイリニア）", "d_stopes": "実行中に ES を停止", "d_runtime": "ゲームの実行環境（次回起動から）", "rt_auto": "自動",
+        "d_fps": "既定フレームレート", "d_scale": "描画スケール", "d_smooth": "画面の平滑化（バイリニア）", "d_stopes": "実行中に ES を停止", "d_runtime": "ゲームの実行環境（次回起動から）", "rt_auto": "自動（β 優先）",
         "scale_auto": "自動縮小", "scale_off": "ネイティブ解像度", "on": "オン", "off": "オフ",
-        "d_note": "個別設定のないゲームに適用されます。ゲーム内 (F2+F1) や ES 詳細設定で変更可",
+        "d_note": "個別設定のないゲームに適用されます。ゲーム内 (Select+X) で個別に変更可",
         "s_export": "セーブデータをすべて書き出す", "s_clean": "ゲームのコピーキャッシュを削除",
         "r_info": "情報", "r_update": "更新パッケージを確認", "r_uninstall": "PocketMZ をアンインストール",
         "working": "お待ちください…", "checking": "確認中…", "installing": "インストール中…",
@@ -163,16 +163,16 @@ I18N = {
         "empty": "No games found. Put MV/MZ folders into roms/rpgmaker, then press Start to scan.",
         "err": "Failed to read the game list: ",
         "scanning": "Looking for games…",
-        "del_ask": lambda t: "Delete \"%s\"?\nRemoves the game folder, ES launcher, and thin copy." % t,
+        "del_ask": lambda t: "Delete \"%s\"?\nRemoves the game folder and thin copy." % t,
         "del_keep": "Delete (keep saves)", "del_all": "Delete with saves",
         "del_all_confirm": lambda t: "Permanently delete \"%s\" AND all its saves? This cannot be undone!" % t,
         "deleting": "Deleting…",
-        "settings": "Settings", "scan": "Scan games", "defaults": "Game defaults", "saves": "Saves",
+        "settings": "Settings", "scan": "Refresh game list", "defaults": "Game defaults", "saves": "Saves",
         "runtime": "Runtime", "about": "About", "exit": "Back to games",
         "hint": "A OK  B Back", "hint_cycle": "Left/Right Change  A Toggle  B Back",
-        "d_fps": "Default FPS", "d_scale": "Render scale", "d_smooth": "Smooth games (bilinear)", "d_stopes": "Stop ES while playing", "d_runtime": "Game runtime (next start)", "rt_auto": "Auto",
+        "d_fps": "Default FPS", "d_scale": "Render scale", "d_smooth": "Smooth games (bilinear)", "d_stopes": "Stop ES while playing", "d_runtime": "Game runtime (next start)", "rt_auto": "Auto (β default)",
         "scale_auto": "Auto downscale", "scale_off": "Native resolution", "on": "On", "off": "Off",
-        "d_note": "Applies when per-game or ES overrides are unset; change per game via F2+F1",
+        "d_note": "Applies when per-game settings are unset; change per game via Select+X",
         "s_export": "Export all saves", "s_clean": "Clean game copy cache",
         "r_info": "Info", "r_update": "Check for update package", "r_uninstall": "Uninstall PocketMZ",
         "working": "Please wait…", "checking": "Checking…", "installing": "Installing…",
@@ -200,7 +200,7 @@ def pick_lang():
 
 
 T = I18N[pick_lang()]
-INFO_KEYS = ("version", "games", "launchers", "withSaves", "dataSize", "free")
+INFO_KEYS = ("version", "games", "withSaves", "dataSize", "free")
 
 # ---------- settings.json & maint helpers (unified with pocketmz-maint.sh) ----------
 DEFAULTS = {"defaultFps": 30, "renderScale": "auto", "smooth": False, "stopES": False, "runtime": "auto"}
@@ -331,10 +331,10 @@ def selftest():
         f.write('{"defaultFps": 45, "renderScale": 3, "stopES": "yes"}')
     assert load_settings() == DEFAULTS, "bad values fall back"
     ok, msg, body = parse_maint_output(
-        "version=1.2.0\ngames=14\nlaunchers=3\nwithSaves=5\ndataSize=1.4G\nfree=22G\nOK info\n", 0)
-    assert ok and msg == "info" and len(body) == 6
+        "version=1.2.0\ngames=14\nwithSaves=5\ndataSize=1.4G\nfree=22G\nOK info\n", 0)
+    assert ok and msg == "info" and len(body) == 5
     rows = info_rows(parse_info(body))
-    assert rows[0] == (T["version"], "1.2.0") and rows[5] == (T["free"], "22G"), rows
+    assert rows[0] == (T["version"], "1.2.0") and rows[4] == (T["free"], "22G"), rows
     ok, msg, body = parse_maint_output("/storage/up/pocketmz-1.3.0.tar\t1.3.0\nOK found\n", 0)
     assert ok and parse_package(body, msg) == ("/storage/up/pocketmz-1.3.0.tar", "1.3.0")
     ok, msg, _ = parse_maint_output("OK deleted game; saves kept in roms/savestates/rpgmz/RJ1/\n", 0)
@@ -1397,17 +1397,12 @@ class Menu:
 
     def do_scan(self):
         def work():
-            script = os.path.join(HERE, "pocketmz-scan.sh")
-            if not os.path.isfile(script):
-                return False, T["missing"].format("pocketmz-scan.sh"), []
-            rc, out = run_cmd(["bash", script])
             self.refresh_library_sync()
-            lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()]
-            return rc == 0, "\n".join(lines[-6:]) or T["scan_empty"], []
+            return True, T["scan_empty"], []
 
         def done(r):
             self.load_initial()
-            self.show_result(r[0], r[1])
+            self.show_result(r[0], "%s (%d)" % (T["games"], len(self.games)))
 
         self.run_async(T["scanning"], work, done)
 

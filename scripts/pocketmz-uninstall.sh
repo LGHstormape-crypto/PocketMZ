@@ -26,10 +26,8 @@ for g in "$RZ"/games/*/; do
   done
 done
 echo "saves kept in $SAVE_BASE"
-"$RZ/pocketmz-scan.sh" --remove
-# what pocketmz-install.sh --es added to the user config (files of a system image are not touched)
-rm -f /storage/.config/emulationstation/es_systems_pocketmz.cfg "/storage/.config/modules/Scan PocketMZ Games.sh" "/storage/.config/modules/PocketMZ.sh" "/storage/.config/modules/PocketMZ Settings.sh"
-rmdir /storage/roms/rpgmz 2>/dev/null
+# Clean legacy per-game Ports entries if any existed from older installs
+for pf in /storage/roms/ports/*.sh; do grep -q "^# pocketmz:" "$pf" 2>/dev/null && rm -f "$pf"; done
 "$RZ/pocketmz-chroot.sh" umount all 2>/dev/null
 grep -q " $RZ/" /proc/mounts && { echo "still mounted under $RZ - reboot and run again" >&2; exit 1; }
 rm -rf "$RZ"

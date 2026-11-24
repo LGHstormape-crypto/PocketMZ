@@ -1,118 +1,180 @@
 # PocketMZ
 
-在掌机上运行 RPG Maker MV / MZ 游戏。PocketMZ 把 NW.js（arm64）和一套 Debian 运行环境打包在一起，并通过 RPG Maker 插件的形式加入针对 1 GB 内存和 RK3566 的运行时补丁，让游戏能在 GKD Mini Plus 这类 ROCKNIX 掌机上流畅运行。游戏本体不包含在本仓库中，需要自己放入；原游戏文件夹从不被修改，每个游戏使用一份可写的精简副本（符号链接），所有修复都是运行时补丁。
+在 ROCKNIX / PortMaster 掌机（aarch64，1 GB 内存环境验证）上运行 RPG Maker MV / MZ 游戏的 **PortMaster 独立版**。游戏本体不包含在本仓库中，需要自己放入；原游戏文件夹全程只读、从不被修改。
+
+- **只在 Ports 中运行**：无需修改 EmulationStation 系统配置、无需 SSH 命令行安装。
+- **默认使用轻量 β 运行时**（Node 24 + 原生扩展 `pmzrt`）：启动更快、内存峰值更低，同时兼容开源 **panfrost** 与闭源 **libmali** GPU 驱动；遇极少数 `.gif` 动图或特殊浏览器 DOM 插件的游戏，会在 `auto`（默认）模式下自动回退 **NW.js** 兼容兜底。
+- **通用手柄控制**：无特定机型物理热键依赖——游戏内 **`Select + X`** 打开 PocketMZ 菜单，**`Select + Start`** 退出游戏。
 
 PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关。RPG Maker 是其商标。
+
+---
 
 ## 声明
 
 - **本项目的代码 100% 由 AI 编写**（包括 Anthropic 的 Claude / Claude Code 以及 Google 的 Antigravity）。人类维护者负责提出需求、在真机上试玩和测试、做出取舍决定，但没有手写代码。代码虽经过实机测试，仍可能有 AI 生成代码常见的问题，欢迎通过 Issue 反馈。
-- **按现状提供，不做任何担保**（见 MIT 许可证）。使用风险自负：可能出现游戏卡死、掌机重启或存档损坏等情况，请自行备份重要存档（PocketMZ 每次启动游戏前会自动备份存档，保留最近 5 份，可在游戏内 PocketMZ 菜单中恢复）。
-- **不包含任何游戏**。请只运行你合法拥有的游戏，本项目不支持也不协助任何盗版行为。PocketMZ 不修改原游戏文件。
-- 与 KADOKAWA / Gotcha Gotcha Games（RPG Maker）、GameKiddy（GKD 掌机）、ROCKNIX 及 NW.js 项目均无关联，也未获得其认可。
-- 补丁针对 GKD Mini Plus（RK3566、1 GB 内存）调整，在其他设备上的表现没有保证。
+- **按现状提供，不做任何担保**（见 MIT 许可证）。使用风险自负：可能出现游戏卡死、掌机重启或存档损坏等情况，请自行备份重要存档（PocketMZ 每次启动游戏前会自动在内存卡滚动保留最近 5 份备份，可在游戏内菜单恢复）。
+- **不包含任何游戏**。请只运行你合法拥有的游戏，本项目不支持也不协助任何盗版行为。
+- 与 KADOKAWA / Gotcha Gotcha Games（RPG Maker）、ROCKNIX、PortMaster 及 NW.js 项目均无关联，也未获得其认可。
+- 补丁针对 RK3566 / 1 GB 内存掌机调优，在其他架构或设备上的表现不做保证。
 
-## 状态
+---
 
-- 已在 GKD Mini Plus（ROCKNIX）上运行：默认采用 `auto` 模式（优先使用无浏览器 **β 运行时**，遇不兼容游戏自动退回 **α / NW.js**）。
-- β 运行时同时支持开源 **panfrost** 与闭源 **libmali** 驱动及纯 OpenGL ES 2.0 环境；α（NW.js）需要 **panfrost** GPU 驱动。
-- 其他 RK3566 / 闭源驱动的 Linux 掌机尚未逐台测试，但 β 运行时已去掉 `libGLESv2` 静态链接并支持宿主 GL 驱动直通与显示后端自动选择（Wayland / X11 / KMSDRM）。
+## 安装步骤（4 步完成，无需 SSH）
 
-## 功能
+1. 从 [GitHub Releases](../../releases) 下载最新的 **`PocketMZ-ports-*.zip`** 并解压。
+2. 解压后会得到**两个条目**，将它们**一起**复制到内存卡的 **`roms/ports/`** 根目录：
+   ```text
+   roms/ports/
+   ├── PocketMZ.sh
+   └── PocketMZ/
+       ├── pocketmz.tar
+       └── VERSION
+   ```
+   > 注意：不要多套一层 `PocketMZ-ports-xxx/` 文件夹，确保 `PocketMZ.sh` 直接位于 `roms/ports/` 下。
+3. 把 RPG Maker MV / MZ 游戏文件夹放到内存卡 **`roms/rpgmaker/`** 下（详见下一节）。
+4. 在掌机 **EmulationStation → Ports** 中找到并打开 **PocketMZ**：
+   - **首次启动**（以及更新了 `roms/ports/PocketMZ/` 后首次启动）会自动把运行环境解包安装到掌机内部 `/storage/pocketmz`（约需几十秒，屏幕会弹出安装提示，**已有存档和设置会自动保留**）；
+   - 安装完成后自动打开 PocketMZ 游戏列表，选游戏按 `A` 即可开始游玩。
 
-- **ES 集成与高级设置**：安装后在 EmulationStation 中出现「RPGMZ」系统（没有该系统时列在 Ports 中），并接入 ES「高级系统设置 / 高级游戏设置」（CPU/GPU 调速器、线程数、核心策略、渲染分辨率、平滑画面、自动保存/加载、画面帧率、显示帧数、运行时内核、运行时关闭 ES）。ES 选「自动」时沿用游戏自身设置；显式选择仅作用于当前会话并同步到 F2 菜单，不改写磁盘配置。
-- **游戏菜单与设置合二为一**：原生 SDL2 程序（`PocketMZ`），按 `Start` 打开设置（扫描游戏、默认设置、存档管理、更新/卸载），按 `Y` 可删除游戏（支持「删游戏保留存档」或「连存档彻底删除」，同时清理失效的 `.rpgmz` 映射）；全部存档直接保存在游戏卡 `/storage/roms/savestates/rpgmz/<游戏ID>/`。
-- **按键与虚拟鼠标**：独立由 ES 手柄配置（`es_input.cfg`）生成唯一手柄映射（不依赖 PortMaster），统一 α / β 按键；支持 `pocketmz.gptk` 热重载，右摇杆控制虚拟鼠标指针、L3/R3 模拟鼠标右键/左键，并在 F2 菜单提供鼠标速度（慢 / 标准 / 快）调节。
-- **热键**（按住 F2 再按）：
-  - F2 + F1：PocketMZ 菜单
-  - F2 + Start：退出游戏
-  - F2 + Select：回到标题画面
-  - F2 + L3 / R3：存档 / 读档画面
-  - F2 + L1：慢动作（半速）开关
-  - F2 + R1：按住快进（3 倍），松开恢复
-  - F2 + A：暂停 / 继续
-  - F2 + X：截图
-  - F2 + Y：显示 / 隐藏帧数
-  - F2 + 上 / 下：调节音量
-- **游戏内 PocketMZ 菜单（F2 + F1）**：帧率 30 / 60、速度、帧数显示、音量、渲染分辨率、平滑画面（实时 GPU 双线性/邻近过滤）、自动保存/加载（退出自动存 `pmz-autosave.json`，下次启动自动续玩）、运行时切换（NW.js / β / 自动）、游戏中关闭 ES、按键映射与鼠标速度、一次性图片预处理、存档备份（启动前自动滚动备份 5 份）。
-- **β 运行时（Node 24 + `pmzrt`）**：不用浏览器的轻量运行时（Node 24 + 自写 N-API 扩展 `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / 5.9 MB 纯解码 FFmpeg 7.1），打包为约 43 MB 的只读叠加镜像 `beta-runtime.sqfs`（与瘦身后的约 179 MB α 镜像合包共约 224 MB）。原生支持 Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` 音频与 `<video>`（`.mp4` / `.webm` 等全屏播放及 WebGL 纹理上传）；内存峰值比 NW.js 低约 150～280 MB、启动更快（约 8～11 秒），与 NW.js 共用同一存档目录。
-- **性能**：按屏幕分辨率渲染；默认 30 fps；大图在加载时缩小并保存持久缓存；窗口内容按显示比例绘制；跳过屏幕外的角色精灵；菜单和战斗的背景快照预先模糊。
-- **内存保护**：cgroup 内存上限；看门狗在掌机因交换分区卡死之前结束游戏；修复了 MV / MZ 引擎中的若干内存泄漏；BGM / BGS 改为边解码边播放（不再整首解码进内存，循环点精确到采样）；MZ 切换地图时保留上一张地图的图块图；短音效只解码一次；场景切换时主动回收内存。
-- **PC 转换工具**：带图形界面，可选择把视频重新编码为 480p / 720p（`tools/`）。
-- **设置界面与游戏菜单**：原生 SDL2 程序，与选择界面风格一致。
+---
+
+## 游戏放置方法
+
+把解压好的**游戏文件夹**放入内存卡 **`roms/rpgmaker/`**（完整路径 `/storage/roms/rpgmaker/`）：
+
+- **文件夹层级**：支持直接放入或按子文件夹分类（最多搜索 4 层目录；如果某个一级子文件夹里包含 2 个及以上游戏，PocketMZ 列表会自动把它识别为分类标签）。
+- **有效游戏结构**：
+  - **RPG Maker MZ**：游戏文件夹内必须直接包含 `index.html` 与 `js/rmmz_core.js`。
+  - **RPG Maker MV**：游戏文件夹内必须包含 `package.json`、`www/index.html` 与 `www/js/rpg_core.js`。
+- **单文件打包 / 大容量视频转换**：如果游戏只有 `index.html` 和一个几十 MB 的 `Game.exe`（没有 `js/` 文件夹，脚本被 Enigma Virtual Box 打包进 exe），PocketMZ 列表会标注为「需要转换」。请先在 Windows 电脑上双击仓库 `tools/PocketMZ转换器.bat` 解包（可选顺便将视频转码为 480p / 720p），再将转换后的文件夹放入 `roms/rpgmaker/`。
+
+---
+
+## 首次进入游戏会很慢（必读）
+
+**每个游戏第一次在 PocketMZ 启动时都会明显比后续启动慢**，这是正常现象：
+
+1. PocketMZ 会为该游戏在 `/storage/pocketmz/games/<游戏ID>/` 建立可写精简副本（仅符号链接，不写入原游戏目录）；
+2. 对游戏内较大的字体（`.ttf/.otf/.woff`）做按需裁剪/子集化（几 MB～几十 MB 字体通常只需保留游戏实际用到的字形，减少内存与载入卡顿）；
+3. 首次读取超高分辨率立绘/背景或超大 APNG 动图时，会一次性降采样并生成持久缓存（`pmz-cache/`）。
+
+- **耐心等待**：字体多、资源大的游戏在**首次启动时可能黑屏或停在载入界面几十秒到 1～3 分钟**，请勿强行关机或断电。
+- **后续极快**：首次预处理完成后，这些缓存和精简字体都会保存下来，**第二次及之后启动通常只需数秒即可进标题画面**；仅当你在卡上覆盖更新了原游戏文件时才会重新触发检查刷新。
+
+---
+
+## 存档与备份位置
+
+- **原游戏目录只读**：游戏文件夹内原有的 `save/` 如果在首次启动时已有存档，会被自动导入，之后游戏运行不再往原游戏目录写入任何内容。
+- **统一存档路径**：所有游戏的存档统一保存在内存卡上：
+  ```text
+  roms/savestates/rpgmz/<游戏ID>/
+  ├── save/           # 当前实际存档（β 与 NW.js 共用同一份，可直接与电脑端互通替换）
+  └── save-backups/   # 每次启动前发现存档有变动时自动滚动保存最近 5 份快照
+  ```
+- **`<游戏ID>` 规则**：优先取路径或文件夹名中的 DLsite 编号（`RJ/VJ/BJ` + 数字），没有编号则取文件夹名 + 路径哈希（因此带编号的游戏移动位置或微调名称也不会丢存档）。
+- **重刷系统 / 升级不丢档**：重刷系统或更新新版 `PocketMZ` 时，`roms/savestates/rpgmz/` 的存档完全保留；在启动器界面按 **`Start` → 存档 → 导出全部存档** 还可一键备份打包到 `roms/pocketmz-saves/`。
+
+---
+
+## 按键与使用说明
+
+### 通用组合键（Ports 通用）
+
+| 组合键 | 功能 |
+| --- | --- |
+| **`Select + X`** | **打开 / 关闭 PocketMZ 游戏内菜单**（期间游戏自动暂停，手柄输入不会透传进游戏） |
+| **`Select + Start`** | **退出游戏**，返回 PocketMZ 启动器列表（建议重要进度先存档，或使用菜单内退出配合自动保存） |
+
+### 默认游戏按键映射（每个游戏可在 `Select + X` 菜单里独立改键）
+
+| 掌机按键 | 默认对应行为 |
+| --- | --- |
+| `A` | 确定（`Enter`） |
+| `B` / `Start` | 取消 / 游戏内系统菜单（`Esc`） |
+| `X` | `D` 键（部分插件扩展键） |
+| `Y` / `Select` | 冲刺（`Shift`） |
+| `L1` / `R1` | 上一页 / 下一页（`PageUp` / `PageDown`） |
+| `L2` / `R2` | `S` / `A` 键（常用作对话快进/自动） |
+| 十字键 / 左摇杆 | 方向移动 |
+| 右摇杆 | 虚拟鼠标指针（点击式游戏适用，可在按键映射页改成方向键或关闭） |
+| `L3` / `R3` | 鼠标右键 / 鼠标左键 |
+
+### 启动器（Ports → PocketMZ）操作
+
+- `A`：启动游戏 · `X`：收藏 · `Y`：删除游戏（可选保留存档或彻底删除） · `Start`：全局设置（刷新列表 / 默认帧率与运行时 / 导出存档 / 清理副本缓存 / 更新与卸载） · `L1 / R1`：切换分类 · `B`：退出回 ES
+
+### 游戏内菜单（`Select + X`）功能
+
+- **帧率（30 / 60）**：默认 30 fps（更省电流畅）；动作类可切 60。
+- **加速（1x / 2x / 3x）**、**显示帧数**、**总音量**。
+- **渲染分辨率 / 平滑画面**：默认按掌机屏幕缩放绘制并关闭多余开销，可随时切换双线性平滑与原生尺寸。
+- **自动保存/加载**：开启后从菜单退出游戏会自动保存当前进度到 `pmz-autosave.json`，下次启动到标题时自动续玩。
+- **运行时切换（自动默认 β / β / NW.js）**：默认优先跑 **β**；若遇到个别不支持的游戏可切 `NW.js`（需系统 GPU 驱动为 `panfrost`）。
+- **存档备份恢复**：一键回退至任意一次启动前自动备份的快照。
+
+---
+
+## 更新与卸载
+
+- **更新**：将新版解压后的 `PocketMZ.sh` 和 `PocketMZ/` 覆盖进 `roms/ports/`，下次打开 **Ports → PocketMZ** 会自动升级并保留所有游戏存档；也可在启动器 `Start → 运行环境 → 检查更新包` 手动更新。
+- **卸载**：启动器 `Start → 运行环境 → 卸载 PocketMZ`（会先保留全部 `roms/savestates/rpgmz/` 存档，仅删除 `/storage/pocketmz` 运行时）。
+
+---
 
 ## 目录结构
 
 | 路径 | 内容 |
-|---|---|
-| `patches/` | 运行时插件 `PocketMZ_*.js`，在游戏加载时添加 |
-| `scripts/` | 启动器、chroot 脚本、安装 / 卸载脚本、设置界面、热键、开发工具（`pocketmz-autotest`、`pocketmz-test`、`pocketmz-padtest`、各种 `*prof*.js` / `*probe*.js` 探针） |
-| `scripts/wpe/` | 实验性的 WPE WebKit 原型（未使用）与部分测量脚本 |
-| `beta/` | 实验性的无浏览器运行时（`pmzrun.js`、`overlay.js`、原生扩展 `pmzrt/`、打包与挂载脚本） |
-| `tools/` | PC 端转换工具（GUI）、基准游戏生成器、仓库导出脚本 |
-| `BUILD.md` | 如何构建运行环境与回归清单 |
-| `scripts/README.md` | 用户手册 |
-| `scripts/INTEGRATION.md` | 系统镜像集成说明 |
+| --- | --- |
+| `patches/` | 运行时插件 `PocketMZ_*.js`（渲染优化、内存管控、第三方插件性能与兼容性修复、游戏内菜单） |
+| `scripts/` | 启动器 UI、PortMaster 入口 `ports/PocketMZ.sh`、运行与 chroot 包装、安装/维护/打包脚本 |
+| `beta/` | 默认无浏览器轻量运行时（`pmzrun.js`、`overlay.js`、原生 C 扩展 `pmzrt/`、打包脚本） |
+| `tools/` | PC 端游戏转换与视频压制工具（`PocketMZ转换器.bat`）、精简依赖交叉编译脚本 |
+| `BUILD.md` | 从零构建与重新打包说明 |
+| `scripts/README.md` | 简明运行手册 |
 | `LICENSE` | MIT 许可证 |
 
-## 安装
-
-从 GitHub Releases 下载预构建的运行环境包（`pocketmz-bundle-*.tar`），或按 [BUILD.md](BUILD.md) 自行构建。
-
-安装运行环境包：
-
-1. 解压安装包。
-2. 运行 `sh pocketmz-install.sh`。原版 ROCKNIX 上加 `--es`，可同时加入 EmulationStation 的「RPGMZ」系统和扫描项。
-
-详细说明见 [scripts/README.md](scripts/README.md)。
-
-**前提**：默认运行时 α（NW.js）需要 **panfrost** GPU 驱动（ES → 系统设置 → GPU DRIVER → panfrost，重启；libmali 下浏览器没有 WebGL）。如果使用实验性 **β 运行时**，则同时支持 `panfrost` 与闭源 `libmali` 驱动（自动挂载宿主 GL 库）。
-
-## 开发说明
-
-- 创建开发模式标记文件 `/storage/pocketmz/dev` 后，`PocketMZ_Debug` REPL 插件会监听 `127.0.0.1:9333`。
-- `scripts/pocketmz-autotest.sh` 自动游玩一个游戏（包括存档被阻止和恢复的情况），并记录内存和帧率随时间的变化。
-- `tools/pocketmz-benchgen.py` 生成两个合成的基准游戏（MV 和 MZ，1920x1080，美术资源为程序生成）。
+---
 
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。
 
-第三方组件：NW.js（MIT）；Debian 软件包（各自的许可证）；字体 Noto CJK（SIL Open Font License）。本仓库不包含二进制文件。
+第三方组件：NW.js（MIT）；Debian 软件包（各自许可证）；FFmpeg 7.1（LGPL/GPL 见打包内 `THIRD-PARTY.txt`）；Noto CJK（SIL Open Font License）。本仓库不包含二进制分发镜像。
+
+---
 
 ## English
 
-PocketMZ runs RPG Maker MV and MZ games on handheld devices. It bundles NW.js (arm64) with a Debian runtime, and adds runtime patches (as RPG Maker plugins loaded at game start) for 1 GB of RAM and the RK3566 SoC. It targets the GKD Mini Plus running ROCKNIX. Games are not included. Original game folders are never modified; each game gets a writable thin copy with symlinks, and all fixes are runtime patches.
+PocketMZ runs **RPG Maker MV and MZ** games on ROCKNIX / PortMaster handhelds (aarch64, tuned for 1 GB RAM / RK3566). **PortMaster-only release** — no EmulationStation `es_systems` edits or SSH setup required. Original game folders are always read-only and never modified.
 
-PocketMZ is an unofficial project, not affiliated with KADOKAWA or Gotcha Gotcha Games. RPG Maker is their trademark.
+- **Default β runtime** (Node 24 + custom N-API `pmzrt` addon): faster startup, ~150–280 MB lower peak RAM, works on both **panfrost** and **libmali** GPU drivers. In default `auto` mode, games that fail β compatibility fall back automatically to **NW.js** (`panfrost` required for NW.js).
+- **Universal handheld controls**: no device-specific hardware buttons required — press **`Select + X`** for the in-game PocketMZ menu, **`Select + Start`** to quit.
 
-**Disclaimer:**
+**Disclaimer:** 100% AI-written code (Claude / Claude Code and Google Antigravity) guided and hardware-tested by the maintainer. Provided as-is under the MIT license without warranty; no games are included.
 
-- **100% of the code in this project was written by AI** (including Anthropic's Claude / Claude Code and Google's Antigravity). The human maintainer set the goals, played and tested on real hardware and made the decisions, but wrote no code. It has been tested on the device, but may still contain the kinds of mistakes AI-written code can have; please report them in Issues.
-- **Provided as is, without warranty of any kind** (see the MIT license). Use at your own risk: games may hang, the handheld may reboot or saves may be damaged. Back up important saves (PocketMZ also backs up the saves before each start, keeps the 5 newest, and the in-game PocketMZ menu can restore them).
-- **No games are included.** Only run games you legally own; this project does not support piracy. PocketMZ never modifies the original game files.
-- Not affiliated with or endorsed by KADOKAWA / Gotcha Gotcha Games (RPG Maker), GameKiddy (GKD handhelds), ROCKNIX or the NW.js project.
-- The patches are tuned for the GKD Mini Plus (RK3566, 1 GB RAM); behaviour on other devices is not guaranteed.
+### Installation (4 steps, no SSH)
 
-**Status:** Works on the GKD Mini Plus (ROCKNIX). The default `auto` mode prefers the browser-less **β runtime** (supporting both **panfrost** and closed-source **libmali** drivers, plus pure OpenGL ES 2.0) and falls back to **α (NW.js)** automatically when needed (α requires **panfrost**). Other Linux handhelds are untested.
+1. Download **`PocketMZ-ports-*.zip`** from [GitHub Releases](../../releases) and extract it.
+2. Copy **both** **`PocketMZ.sh`** and the **`PocketMZ/`** folder directly into **`roms/ports/`** on your SD card (do not wrap them in an extra subfolder).
+3. Put your extracted RPG Maker MV / MZ game folders under **`roms/rpgmaker/`** (subfolders up to 4 levels deep become categories; MZ needs `index.html` + `js/rmmz_core.js`, MV needs `package.json` + `www/index.html` + `www/js/rpg_core.js`; single-`Game.exe` Enigma-packed games must be unpacked first on Windows via `tools/PocketMZ转换器.bat`).
+4. Launch **Ports → PocketMZ** on the handheld. The first run automatically unpacks the runtime to `/storage/pocketmz` (takes ~30 seconds, keeping any existing saves and settings), then opens the game launcher.
 
-**Features:**
+### Expect a Slow First Launch Per Game
 
-- EmulationStation integration ("RPGMZ" system, with Ports as a fallback) plus ES Advanced System/Game Options (`cpugovernor`, `gpuperf`, `threads`, `forcepack`, render scale, smooth bilinear filtering, auto save/load, FPS cap, FPS counter, runtime selector, stop ES). Choosing "Auto" in ES respects per-game settings; explicit choices apply to the session without overwriting disk configs.
-- Unified PocketMZ game menu & settings (native SDL2): press `Start` for settings (scan games, defaults, saves, update/uninstall), press `Y` to delete a game (keep saves or delete everything, including stale `.rpgmz` launchers); all saves & rolling backups live on the game card at `/storage/roms/savestates/rpgmz/<id>/`.
-- Standalone α/β controller mapping generated directly from EmulationStation `es_input.cfg` (independent of PortMaster), `pocketmz.gptk` with 1s hot-reload and per-game key mapping, plus virtual mouse (right stick pointer, L3/R3 right/left click, configurable mouse speed in the F2 menu).
-- Hold-F2 hotkeys: menu (F1), quit (Start), title (Select), save and load screens (L3, R3), slow motion (L1), hold fast-forward (R1), pause (A), screenshot (X), FPS display (Y), volume (Up/Down).
-- In-game PocketMZ menu (F2 + F1): frame rate (30/60), speed, FPS display, volume, render scale, smooth filtering (live GPU `LINEAR`/`NEAREST`), auto save/load (`pmz-autosave.json` on quit/launch), runtime switch (NW.js / β / auto), close ES while playing, key mapping & mouse speed, one-time image precompile, save backups (rolling 5 backups before launch).
-- β runtime (Node 24 + `pmzrt`): lightweight browser-less runtime (Node 24 + custom N-API addon `pmzrt` + SDL2 / GLES2 / Cairo / Pango / libvorbisfile / 5.9 MB decode-only FFmpeg 7.1) shipped as an ~43 MB read-only overlay image (`beta-runtime.sqfs`, ~224 MB total bundle with the slimmed ~179 MB α image). Supports native Ogg / `.m4a` / `.mp3` / `.wav` / `.rpgmvm` audio and `<video>` playback (`.mp4` / `.webm` fullscreen & WebGL texture upload). Uses ~150–280 MB less peak RAM and cold-boots in ~8–11s while sharing saves with NW.js.
-- Performance: rendering at screen resolution, 30 fps default, large images downscaled at load with a persistent cache, window contents drawn at the display scale, off-screen sprites skipped, pre-blurred menu backgrounds.
-- Memory protection: cgroup limits, and a watchdog that ends the game before the handheld stalls in swap. Leak fixes for the MV and MZ engines; BGM / BGS decoded in small pieces while playing instead of in full (sample-accurate loop points); MZ keeps the previous map's tileset images across a transfer; short sound effects decoded once; a full GC at scene changes.
-- PC converter tool with a GUI (in `tools/`), with optional video re-encode to 480p or 720p.
-- Settings screen and game menu, native SDL2.
+The **very first time you start each game**, PocketMZ builds its symlinked thin copy, subsets large fonts to reduce memory pressure, and caches oversized images / APNG animations. Heavy games can sit on a black/loading screen for **30 seconds to 1–3 minutes** on first launch — **please wait and do not power off**. Every subsequent launch starts in just a few seconds.
 
-**Layout:** `patches/` (runtime plugins), `scripts/` (launcher, chroot, installer, settings, hotkeys, dev tools), `scripts/wpe/` (experimental, unused), `beta/` (experimental browser-less runtime: `pmzrun.js`, `overlay.js`, native addon `pmzrt/`, packaging scripts), `tools/` (PC converter, benchmark generator, repo exporter), `BUILD.md`, `scripts/README.md` (user manual), `scripts/INTEGRATION.md` (system image integration).
+### Saves & Backups
 
-**Install:** Download the prebuilt runtime bundle (`pocketmz-bundle-*.tar`) from GitHub Releases, or build it yourself (see `BUILD.md`). Extract the bundle and run `sh pocketmz-install.sh`. The α runtime (NW.js) requires the `panfrost` GPU driver (EmulationStation: System settings, GPU DRIVER, panfrost, then reboot); the β runtime works on both `panfrost` and closed-source `libmali`.
+- Original game folders in `roms/rpgmaker/` are **never modified** (existing saves inside them are imported once on first run).
+- All saves live on your SD card at **`roms/savestates/rpgmz/<game-id>/save/`**, shared between β and NW.js and preserved across updates or OS reflashes.
+- Up to **5 rolling pre-launch backups** are kept in **`roms/savestates/rpgmz/<game-id>/save-backups/`** and can be restored from the `Select + X` menu.
 
-**Development:** Create the flag file `/storage/pocketmz/dev` to enable the `PocketMZ_Debug` REPL on `127.0.0.1:9333`. `scripts/pocketmz-autotest.sh` plays a game automatically and records memory and FPS timelines. `tools/pocketmz-benchgen.py` generates two synthetic benchmark games (MV and MZ, 1920x1080).
+### Controls
 
-**License:** MIT (`LICENSE`). Third-party: NW.js (MIT), Debian packages (their own licenses), Noto CJK fonts (OFL). Binaries are not in this repository.
+- **`Select + X`**: Open / close the in-game **PocketMZ menu** (pause, 30/60 FPS cap, 1x–3x speed, FPS display, volume, render scale, smooth scaling, auto save/load, β / NW.js switcher, per-game key mapping, save backup restore, quit).
+- **`Select + Start`**: Quit game and return to the PocketMZ launcher.
+- Right stick acts as a virtual mouse pointer (`L3`/`R3` = right/left click), configurable per game inside `Select + X`.
+
+**License:** MIT (`LICENSE`). No binaries are committed to this repository.

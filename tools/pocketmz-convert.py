@@ -33,7 +33,7 @@ RUNTIME_FILES = {"debug.log"}
 RUNTIME_DIRS = {"locales", "swiftshader"}
 MB = 1024 * 1024
 REMOTE_ROOT = "/storage/roms/rpgmaker"
-REMOTE_SCAN = "/storage/pocketmz/pocketmz-scan.sh"
+REMOTE_SCAN = "if [ -x /storage/pocketmz/pocketmz-scan.sh ]; then /storage/pocketmz/pocketmz-scan.sh; elif [ -f /storage/pocketmz/pocketmz-library.py ]; then python3 /storage/pocketmz/pocketmz-library.py; fi"
 DLSITE_RE = re.compile(r"(?<![A-Za-z0-9])[RVB]J\d{6,8}(?!\d)")
 
 
