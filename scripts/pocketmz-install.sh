@@ -14,7 +14,8 @@ fi
 mkdir -p "$RZ/games" "$RZ/home"
 if [ "$FROM" != "$RZ" ]; then
   [ -x "$RZ/pocketmz-chroot.sh" ] && "$RZ/pocketmz-chroot.sh" umount all 2>/dev/null || true
-  [ -f "$FROM/beta-runtime.sqfs" ] && [ -x "$RZ/beta/beta-mount.sh" ] && "$RZ/beta/beta-mount.sh" umount 2>/dev/null || true   # the β image is replaced below
+  [ -x "$RZ/beta/beta-mount.sh" ] && "$RZ/beta/beta-mount.sh" umount 2>/dev/null || true   # unmount before replacing or switching editions
+  [ ! -f "$FROM/rootfs.sqfs" ] && [ -f "$RZ/rootfs.sqfs" ] && rm -f "$RZ/rootfs.sqfs"     # switching from dual-core to β-only removes stale rootfs.sqfs
   for f in "$FROM"/*; do
     n=$(basename "$f")
     case "$n" in games|home|rootfs) continue ;; esac
@@ -33,7 +34,11 @@ if [ "$FROM" != "$RZ" ]; then
   done
 fi
 chmod +x "$RZ"/*.sh 2>/dev/null || true
-[ -f "$RZ/beta-runtime.sqfs" ] && echo "β runtime installed (default runtime: auto -> β first, NW.js fallback)"
+if [ -f "$RZ/beta-runtime.sqfs" ] && [ -f "$RZ/rootfs.sqfs" ]; then
+  echo "Dual-core runtime installed (default: auto -> β first, NW.js fallback)"
+elif [ -f "$RZ/beta-runtime.sqfs" ]; then
+  echo "β-only standalone runtime installed (supports open & closed GPU drivers)"
+fi
 rm -f "$RZ/dev"                      # release mode: no debug REPL plugin in the games
 rm -f "$RZ/pocketmz-hotkeys.py" "$RZ/gkd-thermal" "$RZ/pocketmz-scan.sh" "$RZ/pocketmz-bootstrap.sh" "$RZ/pocketmz-settings.py"
 mkdir -p /storage/roms/rpgmaker

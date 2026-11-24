@@ -16,10 +16,23 @@ static void vid_mix_audio(float *aL, float *aR, int n, int rate);
 #define AU_MAXB 2048        // frames per mixing chunk (the SDL buffer is cut into chunks of this size)
 #define AU_DEPTH 12         // graph depth limit
 #define AU_NEV 32           // automation events per parameter
+#define AU_SCHUNK 4096      // decoded frames per streaming voice chunk (~16 KB)
+#define AU_STREAM_MIN_SEC 8 // stream Ogg Vorbis longer than this; keep short SEs as full PCM
+
+typedef struct { const uint8_t *p; size_t n, pos; } AMemR;
+static size_t am_read(void *ptr, size_t sz, size_t nm, void *ds) { AMemR *m = ds; size_t want = sz * nm, have = m->n - m->pos; if (want > have) want = have; memcpy(ptr, m->p + m->pos, want); m->pos += want; return sz ? want / sz : 0; }
+static int am_seek(void *ds, ogg_int64_t off, int wh) { AMemR *m = ds; int64_t np = wh == SEEK_SET ? off : wh == SEEK_CUR ? (int64_t)m->pos + off : (int64_t)m->n + off; if (np < 0 || np > (int64_t)m->n) return -1; m->pos = np; return 0; }
+static int am_close(void *ds) { return 0; }
+static long am_tell(void *ds) { return (long)((AMemR *)ds)->pos; }
 
 typedef struct { double t, v, t0, v0, tc; int type; } AEv;     // type 0 set, 1 linear ramp, 2 exponential ramp, 3 setTarget
 typedef struct { double v; AEv ev[AU_NEV]; int n; } AParam;
-typedef struct { int16_t *d; int nch; int64_t n; int sr; int refs; int used; } ABuf;
+typedef struct { int16_t *d; uint8_t *ogg; size_t ogg_len; int nch; int64_t n; int sr; int refs; int used; } ABuf;
+typedef struct {
+  OggVorbis_File vf; AMemR mem; int open;
+  int16_t pcm[AU_SCHUNK * 2]; int64_t base; int count; int64_t next; int oc;
+  int ls_valid; int64_t ls_idx; float ls_L, ls_R;
+} AStream;
 typedef struct {
   int used, type;                        // type 0 gain, 1 panner, 2 source, 3 destination
   AParam p[2];                           // [0] gain, [1] playbackRate
@@ -28,11 +41,12 @@ typedef struct {
   double pgm[2], pgs[2]; int pneg;       // panner: mono gains L/R, stereo gains L/R, stereo azimuth <= 0
   int vstate;                            // source: 0 not started, 1 playing/scheduled, 2 ended
   int buf; double pos; int64_t startF, stopF, ls, le, endPos; int loop, notify;
+  AStream *st;                           // non-NULL for streaming Ogg Vorbis voices
 } ANode;
 
 static SDL_mutex *au_mx;
 static SDL_AudioDeviceID au_dev;
-static int au_rate = 44100, au_blk;
+static int au_rate = 44100, au_blk, au_no_stream;
 static double au_vol = 1.0;
 static volatile int64_t au_frames;      // frames mixed so far (the clock)
 static ABuf *au_B; static int au_nB, au_cB;
@@ -104,7 +118,99 @@ static int node_alloc(int type) {
 }
 static void buf_unref(int id) {
   if (id < 0 || id >= au_nB || !au_B[id].used) return;
-  if (--au_B[id].refs <= 0) { free(au_B[id].d); memset(&au_B[id], 0, sizeof(ABuf)); }
+  if (--au_B[id].refs <= 0) { free(au_B[id].d); free(au_B[id].ogg); memset(&au_B[id], 0, sizeof(ABuf)); }
+}
+static void stream_close(ANode *n) {
+  if (!n || !n->st) return;
+  if (n->st->open) ov_clear(&n->st->vf);
+  free(n->st);
+  n->st = NULL;
+}
+static AStream *stream_open(const ABuf *b) {
+  if (!b || !b->ogg || !b->ogg_len) return NULL;
+  AStream *s = calloc(1, sizeof *s);
+  if (!s) return NULL;
+  s->mem.p = b->ogg; s->mem.n = b->ogg_len; s->mem.pos = 0;
+  ov_callbacks cb = { am_read, am_seek, am_close, am_tell };
+  if (ov_open_callbacks(&s->mem, &s->vf, NULL, 0, cb) < 0) { free(s); return NULL; }
+  s->oc = b->nch > 2 ? 2 : b->nch;
+  s->open = 1;
+  return s;
+}
+static void stream_fill(AStream *s, int64_t target) {
+  if (!s || !s->open) return;
+  if (target >= s->base + s->count && target == s->next && s->count > 0) {
+    int keep = s->count >= 4 ? 4 : s->count;
+    if (keep > 0) memmove(s->pcm, s->pcm + (s->count - keep) * s->oc, (size_t)keep * s->oc * sizeof(int16_t));
+    s->base = s->next - keep;
+    s->count = keep;
+  } else if (target < s->base || target >= s->base + s->count) {
+    if (ov_pcm_seek(&s->vf, target) != 0) { s->count = 0; return; }
+    s->base = target; s->count = 0; s->next = target;
+  }
+  int bs = 0;
+  while (s->count < AU_SCHUNK) {
+    float **pp;
+    long got = ov_read_float(&s->vf, &pp, AU_SCHUNK - s->count, &bs);
+    if (got == OV_HOLE) continue;
+    if (got <= 0) break;
+    for (int c = 0; c < s->oc; c++) {
+      const float *src = pp[c]; int16_t *dst = s->pcm + s->count * s->oc + c;
+      for (long i = 0; i < got; i++) {
+        float v = src[i] * 32768.0f;
+        dst[i * s->oc] = v >= 32767 ? 32767 : v <= -32768 ? -32768 : (int16_t)lrintf(v);
+      }
+    }
+    s->count += (int)got;
+    s->next += got;
+  }
+}
+static void stream_sample(AStream *s, int64_t idx, int64_t total, float *outL, float *outR) {
+  if (!s || idx < 0 || idx >= total) { *outL = *outR = 0; return; }
+  if (s->ls_valid && idx == s->ls_idx) { *outL = s->ls_L; *outR = s->ls_R; return; }
+  if (idx < s->base || idx >= s->base + s->count) stream_fill(s, idx);
+  if (idx >= s->base && idx < s->base + s->count) {
+    int64_t off = (idx - s->base) * s->oc;
+    *outL = (float)s->pcm[off];
+    *outR = s->oc == 2 ? (float)s->pcm[off + 1] : *outL;
+  } else {
+    *outL = *outR = 0;
+  }
+}
+static void stream_cache_ls(AStream *s, const ABuf *b, int64_t ls) {
+  if (!s || !b || !b->ogg || ls < 0 || ls >= b->n) return;
+  if (s->ls_valid && s->ls_idx == ls) return;
+  if (ls >= s->base && ls < s->base + s->count) {
+    int64_t off = (ls - s->base) * s->oc;
+    s->ls_L = (float)s->pcm[off];
+    s->ls_R = s->oc == 2 ? (float)s->pcm[off + 1] : s->ls_L;
+    s->ls_idx = ls; s->ls_valid = 1;
+    return;
+  }
+  AMemR m = { b->ogg, b->ogg_len, 0 };
+  ov_callbacks cb = { am_read, am_seek, am_close, am_tell };
+  OggVorbis_File vf;
+  if (ov_open_callbacks(&m, &vf, NULL, 0, cb) < 0) return;
+  if (ov_pcm_seek(&vf, ls) == 0) {
+    int bs = 0; float **pp;
+    for (;;) {
+      long got = ov_read_float(&vf, &pp, 1, &bs);
+      if (got == OV_HOLE) continue;
+      if (got > 0) {
+        float v0 = pp[0][0] * 32768.0f;
+        int16_t q0 = v0 >= 32767 ? 32767 : v0 <= -32768 ? -32768 : (int16_t)lrintf(v0);
+        s->ls_L = (float)q0;
+        if (s->oc == 2) {
+          float v1 = pp[1][0] * 32768.0f;
+          int16_t q1 = v1 >= 32767 ? 32767 : v1 <= -32768 ? -32768 : (int16_t)lrintf(v1);
+          s->ls_R = (float)q1;
+        } else s->ls_R = s->ls_L;
+        s->ls_idx = ls; s->ls_valid = 1;
+      }
+      break;
+    }
+  }
+  ov_clear(&vf);
 }
 static void unlink_edge(int s, int d) {
   if (s < 0 || d < 0 || s >= au_nN || d >= au_nN) return;
@@ -125,6 +231,7 @@ static void node_release(int id) {   // unlink everything, drop the buffer refer
   ANode *n = &au_N[id];
   while (n->nout) unlink_edge(id, n->out[0]);
   while (n->nin) unlink_edge(n->in[0], id);
+  stream_close(n);
   if (n->type == 2 && n->vstate == 1) buf_unref(n->buf);
   n->vstate = 2; n->buf = -1;
 }
@@ -132,6 +239,7 @@ static void voice_end(int id) {
   ANode *n = &au_N[id];
   if (n->vstate != 1) return;
   while (n->nout) unlink_edge(id, n->out[0]);
+  stream_close(n);
   buf_unref(n->buf); n->buf = -1; n->vstate = 2;
   if (n->notify && au_nended < (int)(sizeof au_ended / sizeof au_ended[0])) au_ended[au_nended++] = id;
 }
@@ -150,21 +258,44 @@ static int voice_mix(int id, float *aL, float *aR, int n, int64_t F0, double t0)
   double step = rate * b->sr / au_rate, pos = nd->pos;
   int64_t len = b->n, ls = nd->ls, le = nd->le, lim = nd->endPos >= 0 && nd->endPos < len ? nd->endPos : len;
   int loop = nd->loop && le > ls; int ended = 0; const int16_t *d = b->d; const float k = 1.0f / 32768.0f; int st = b->nch == 2;
-  for (int i = i0; i < iend; i++) {
-    if (loop) { if (pos >= le) { double ll = (double)(le - ls); pos -= ll * floor((pos - ls) / ll); } }
-    else if (pos >= lim) { ended = 1; break; }
-    int64_t ip = (int64_t)pos; double fr = pos - ip;
-    float l, r;
-    if (fr == 0) { if (st) { l = d[2 * ip]; r = d[2 * ip + 1]; } else l = r = d[ip]; }
-    else {
-      int64_t i1 = ip + 1;
-      if (loop && i1 >= le) i1 = ls + (i1 - le); else if (i1 >= len) i1 = ip;
-      float f = (float)fr;
-      if (st) { l = d[2 * ip] + (d[2 * i1] - d[2 * ip]) * f; r = d[2 * ip + 1] + (d[2 * i1 + 1] - d[2 * ip + 1]) * f; }
-      else l = r = d[ip] + (d[i1] - d[ip]) * f;
+  if (!d) {
+    AStream *ast = nd->st;
+    if (!ast) { voice_end(id); return 0; }
+    if (loop && (!ast->ls_valid || ast->ls_idx != ls)) stream_cache_ls(ast, b, ls);
+    for (int i = i0; i < iend; i++) {
+      if (loop) { if (pos >= le) { double ll = (double)(le - ls); pos -= ll * floor((pos - ls) / ll); } }
+      else if (pos >= lim) { ended = 1; break; }
+      int64_t ip = (int64_t)pos; double fr = pos - ip;
+      float l, r;
+      if (fr == 0) { stream_sample(ast, ip, len, &l, &r); }
+      else {
+        int64_t i1 = ip + 1;
+        if (loop && i1 >= le) i1 = ls + (i1 - le); else if (i1 >= len) i1 = ip;
+        float f = (float)fr, l0, r0, l1, r1;
+        stream_sample(ast, ip, len, &l0, &r0);
+        stream_sample(ast, i1, len, &l1, &r1);
+        l = l0 + (l1 - l0) * f; r = r0 + (r1 - r0) * f;
+      }
+      aL[i] += l * k; aR[i] += r * k;
+      pos += step;
     }
-    aL[i] += l * k; aR[i] += r * k;
-    pos += step;
+  } else {
+    for (int i = i0; i < iend; i++) {
+      if (loop) { if (pos >= le) { double ll = (double)(le - ls); pos -= ll * floor((pos - ls) / ll); } }
+      else if (pos >= lim) { ended = 1; break; }
+      int64_t ip = (int64_t)pos; double fr = pos - ip;
+      float l, r;
+      if (fr == 0) { if (st) { l = d[2 * ip]; r = d[2 * ip + 1]; } else l = r = d[ip]; }
+      else {
+        int64_t i1 = ip + 1;
+        if (loop && i1 >= le) i1 = ls + (i1 - le); else if (i1 >= len) i1 = ip;
+        float f = (float)fr;
+        if (st) { l = d[2 * ip] + (d[2 * i1] - d[2 * ip]) * f; r = d[2 * ip + 1] + (d[2 * i1 + 1] - d[2 * ip + 1]) * f; }
+        else l = r = d[ip] + (d[i1] - d[ip]) * f;
+      }
+      aL[i] += l * k; aR[i] += r * k;
+      pos += step;
+    }
   }
   nd->pos = pos;
   if (!loop && !ended && pos >= lim && step > 0) ended = 1;
@@ -251,6 +382,8 @@ DEFR(auInit, 4,
   napi_value o; napi_create_object(env, &o);
   if (!au_mx) au_mx = SDL_CreateMutex();
   if (!au_N) { au_cN = 64; au_N = calloc(au_cN, sizeof(ANode)); au_nN = 1; au_N[0].used = 1; au_N[0].type = 3; }
+  const char *se = getenv("PMZ_AUDIO_STREAM");
+  au_no_stream = (se && (!strcmp(se, "0") || !strcmp(se, "off") || !strcmp(se, "false"))) ? 1 : 0;
   au_vol = D(0); if (!(au_vol >= 0)) au_vol = 1;
   char *dp = a_[1] ? arg_utf8(env, a_[1]) : NULL;
   if (dp && dp[0]) { snprintf(au_dumpPath, sizeof au_dumpPath, "%s", dp); au_capCap = 1 << 20; au_cap = malloc(au_capCap * sizeof(float)); au_capN = 0; }
@@ -278,9 +411,14 @@ DEFR(auStats, 1,
   set_int(env, o, "blockUs", au_rate ? 1e6 * au_blk / au_rate : 0);
   set_int(env, o, "rms", au_msamp ? sqrt(au_sumsq / au_msamp) : 0); set_int(env, o, "peak", au_peak);
   set_int(env, o, "capFrames", (double)(au_capN / 2));
-  int nb = 0; double bytes = 0; for (int i = 0; i < au_nB; i++) if (au_B[i].used) { nb++; bytes += (double)au_B[i].n * au_B[i].nch * 2; }
+  int nb = 0, nsb = 0; double bytes = 0;
+  for (int i = 0; i < au_nB; i++) if (au_B[i].used) {
+    nb++;
+    if (au_B[i].ogg) { nsb++; bytes += (double)au_B[i].ogg_len; }
+    else bytes += (double)au_B[i].n * au_B[i].nch * 2;
+  }
   int nn = 0; for (int i = 1; i < au_nN; i++) if (au_N[i].used) nn++;
-  set_int(env, o, "buffers", nb); set_int(env, o, "bufferBytes", bytes); set_int(env, o, "nodes", nn);
+  set_int(env, o, "buffers", nb); set_int(env, o, "streamBuffers", nsb); set_int(env, o, "bufferBytes", bytes); set_int(env, o, "nodes", nn);
   if (D(0) != 0) { au_cbNs = au_cbMax = 0; au_cbCount = au_cbOver = 0; au_sumsq = au_peak = 0; au_msamp = 0; }
   AU_UNLOCK();
   return o;)
@@ -303,7 +441,18 @@ static int buf_new(int16_t *d, int nch, int64_t n, int sr) {   // takes ownershi
   int id = -1;
   for (int i = 0; i < au_nB; i++) if (!au_B[i].used) { id = i; break; }
   if (id < 0) { if (au_nB >= au_cB) { au_cB = au_cB ? au_cB * 2 : 64; au_B = realloc(au_B, au_cB * sizeof(ABuf)); } id = au_nB++; }
+  memset(&au_B[id], 0, sizeof(ABuf));
   au_B[id].d = d; au_B[id].nch = nch; au_B[id].n = n; au_B[id].sr = sr; au_B[id].refs = 1; au_B[id].used = 1;
+  AU_UNLOCK();
+  return id;
+}
+static int buf_new_ogg(uint8_t *ogg, size_t ogg_len, int nch, int64_t n, int sr) {   // takes ownership of ogg
+  AU_LOCK();
+  int id = -1;
+  for (int i = 0; i < au_nB; i++) if (!au_B[i].used) { id = i; break; }
+  if (id < 0) { if (au_nB >= au_cB) { au_cB = au_cB ? au_cB * 2 : 64; au_B = realloc(au_B, au_cB * sizeof(ABuf)); } id = au_nB++; }
+  memset(&au_B[id], 0, sizeof(ABuf));
+  au_B[id].ogg = ogg; au_B[id].ogg_len = ogg_len; au_B[id].nch = nch; au_B[id].n = n; au_B[id].sr = sr; au_B[id].refs = 1; au_B[id].used = 1;
   AU_UNLOCK();
   return id;
 }
@@ -316,7 +465,7 @@ DEFR(auBufCreate, 3,
   return ret_d(env, id);)
 DEF(auBufWrite, 4,   // (id, channel, Float32Array, startFrame)
   void *p; size_t len; int id = (int)D(0), ch = (int)D(1); int64_t st = (int64_t)D(3);
-  if (argbytes(env, a_[2], &p, &len) && id >= 0 && id < au_nB && au_B[id].used) {
+  if (argbytes(env, a_[2], &p, &len) && id >= 0 && id < au_nB && au_B[id].used && au_B[id].d) {
     ABuf *b = &au_B[id]; const float *src = p; int64_t cnt = len / 4;
     if (ch >= 0 && ch < b->nch && st >= 0) { if (st + cnt > b->n) cnt = b->n - st;
       for (int64_t i = 0; i < cnt; i++) { float v = src[i] * 32768.0f; b->d[(st + i) * b->nch + ch] = v >= 32767 ? 32767 : v <= -32768 ? -32768 : (int16_t)lrintf(v); } }
@@ -326,22 +475,45 @@ DEFR(auBufRead, 4,   // (id, channel, start, count) -> Float32Array
   if (id < 0 || id >= au_nB || !au_B[id].used) return ret_null(env);
   ABuf *b = &au_B[id]; if (ch < 0 || ch >= b->nch) ch = 0; if (st < 0) st = 0; if (st > b->n) st = b->n; if (st + cnt > b->n) cnt = b->n - st;
   napi_value ab, ta; float *p; napi_create_arraybuffer(env, cnt * 4, (void **)&p, &ab);
-  for (int64_t i = 0; i < cnt; i++) p[i] = b->d[(st + i) * b->nch + ch] / 32768.0f;
+  if (b->d) {
+    for (int64_t i = 0; i < cnt; i++) p[i] = b->d[(st + i) * b->nch + ch] / 32768.0f;
+  } else if (b->ogg && cnt > 0) {
+    memset(p, 0, (size_t)cnt * 4);
+    AMemR m = { b->ogg, b->ogg_len, 0 };
+    ov_callbacks cb = { am_read, am_seek, am_close, am_tell };
+    OggVorbis_File vf;
+    if (ov_open_callbacks(&m, &vf, NULL, 0, cb) >= 0) {
+      if (ov_pcm_seek(&vf, st) == 0) {
+        int64_t pos = 0; int bs = 0;
+        while (pos < cnt) {
+          float **pp; long ask = (cnt - pos) > 4096 ? 4096 : (long)(cnt - pos);
+          long got = ov_read_float(&vf, &pp, (int)ask, &bs);
+          if (got == OV_HOLE) continue;
+          if (got <= 0) break;
+          const float *s = pp[ch];
+          for (long i = 0; i < got; i++) {
+            float v = s[i] * 32768.0f;
+            int16_t q = v >= 32767 ? 32767 : v <= -32768 ? -32768 : (int16_t)lrintf(v);
+            p[pos++] = q / 32768.0f;
+          }
+        }
+      }
+      ov_clear(&vf);
+    }
+  }
   napi_create_typedarray(env, napi_float32_array, cnt, ab, 0, &ta);
   return ta;)
 DEF(auBufFree, 1,
   int id = (int)D(0);
   AU_LOCK();
-  if (id >= 0 && id < au_nB && au_B[id].used) { int64_t by = au_B[id].n * au_B[id].nch * 2; buf_unref(id); { int64_t adj_; napi_adjust_external_memory(env, -by, &adj_); }; }
+  if (id >= 0 && id < au_nB && au_B[id].used) {
+    int64_t by = au_B[id].ogg ? (int64_t)au_B[id].ogg_len : au_B[id].n * au_B[id].nch * 2;
+    buf_unref(id); { int64_t adj_; napi_adjust_external_memory(env, -by, &adj_); };
+  }
   AU_UNLOCK();)
 
 // ---- Ogg Vorbis decode on a worker thread ----
-typedef struct { const uint8_t *p; size_t n, pos; } AMemR;
-static size_t am_read(void *ptr, size_t sz, size_t nm, void *ds) { AMemR *m = ds; size_t want = sz * nm, have = m->n - m->pos; if (want > have) want = have; memcpy(ptr, m->p + m->pos, want); m->pos += want; return sz ? want / sz : 0; }
-static int am_seek(void *ds, ogg_int64_t off, int wh) { AMemR *m = ds; int64_t np = wh == SEEK_SET ? off : wh == SEEK_CUR ? (int64_t)m->pos + off : (int64_t)m->n + off; if (np < 0 || np > (int64_t)m->n) return -1; m->pos = np; return 0; }
-static int am_close(void *ds) { return 0; }
-static long am_tell(void *ds) { return (long)((AMemR *)ds)->pos; }
-typedef struct { napi_async_work work; napi_deferred def; uint8_t *src; size_t len; int16_t *pcm; int64_t frames; int nch, sr; char err[128]; } ADec;
+typedef struct { napi_async_work work; napi_deferred def; uint8_t *src; size_t len; int16_t *pcm; uint8_t *ogg; size_t ogg_len; int64_t frames; int nch, sr; char err[128]; } ADec;
 static int ff_am_read(void *op, uint8_t *buf, int sz) {
   AMemR *m = (AMemR *)op;
   if (m->pos >= m->n) return AVERROR_EOF;
@@ -426,8 +598,16 @@ static void adec_exec(napi_env env, void *data) {
   ov_callbacks cb = { am_read, am_seek, am_close, am_tell }; OggVorbis_File vf;
   if (ov_open_callbacks(&m, &vf, NULL, 0, cb) < 0) { adec_ffmpeg(d); return; }
   vorbis_info *vi = ov_info(&vf, -1); int nch = vi->channels, sr = (int)vi->rate;
-  ogg_int64_t tot = ov_pcm_total(&vf, -1); int64_t cap = tot > 0 ? tot : 65536;
-  int oc = nch > 2 ? 2 : nch; int16_t *pcm = malloc((size_t)cap * oc * 2);
+  ogg_int64_t tot = ov_pcm_total(&vf, -1);
+  int oc = nch > 2 ? 2 : nch;
+  if (!au_no_stream && ov_seekable(&vf) && tot > (ogg_int64_t)sr * AU_STREAM_MIN_SEC && ov_pcm_seek(&vf, 0) == 0) {
+    ov_clear(&vf);
+    d->ogg = d->src; d->ogg_len = d->len; d->src = NULL;
+    d->frames = tot; d->nch = oc; d->sr = sr;
+    return;
+  }
+  int64_t cap = tot > 0 ? tot : 65536;
+  int16_t *pcm = malloc((size_t)cap * oc * 2);
   int64_t n = 0; int bs = 0;
   if (!pcm) { snprintf(d->err, sizeof d->err, "out of memory"); ov_clear(&vf); return; }
   for (;;) {
@@ -445,9 +625,10 @@ static void adec_exec(napi_env env, void *data) {
 }
 static void adec_done(napi_env env, napi_status st, void *data) {
   ADec *d = data; napi_value v;
-  if (d->pcm) {
-    int id = buf_new(d->pcm, d->nch, d->frames, d->sr);
-    { int64_t adj_; napi_adjust_external_memory(env, d->frames * d->nch * 2, &adj_); };
+  if (d->pcm || d->ogg) {
+    int id = d->ogg ? buf_new_ogg(d->ogg, d->ogg_len, d->nch, d->frames, d->sr) : buf_new(d->pcm, d->nch, d->frames, d->sr);
+    int64_t ext = d->ogg ? (int64_t)d->ogg_len : d->frames * d->nch * 2;
+    { int64_t adj_; napi_adjust_external_memory(env, ext, &adj_); };
     napi_create_object(env, &v); set_int(env, v, "id", id); set_int(env, v, "sampleRate", d->sr); set_int(env, v, "length", (double)d->frames); set_int(env, v, "numberOfChannels", d->nch);
     napi_resolve_deferred(env, d->def, v);
   } else {
@@ -488,8 +669,14 @@ DEFR(auStart, 8,
   int id = (int)D(0), bi = (int)D(1), ok = 0;
   AU_LOCK();
   if (id > 0 && id < au_nN && au_N[id].used && au_N[id].type == 2 && au_N[id].vstate == 0 && bi >= 0 && bi < au_nB && au_B[bi].used) {
-    ANode *n = &au_N[id]; ABuf *b = &au_B[bi]; b->refs++;
-    n->buf = bi; n->vstate = 1; n->notify = 1;
+    ANode *n = &au_N[id]; ABuf *b = &au_B[bi];
+    AStream *ast = NULL;
+    if (b->ogg) {
+      ast = stream_open(b);
+      if (!ast) { AU_UNLOCK(); return ret_b(env, 0); }
+    }
+    b->refs++;
+    n->st = ast; n->buf = bi; n->vstate = 1; n->notify = 1;
     double when = D(2), off = D(3), dur = D(4);
     n->startF = when > 0 ? llround(when * au_rate) : 0; n->stopF = -1;
     n->pos = off > 0 ? off * b->sr : 0; n->endPos = dur >= 0 ? (int64_t)llround((off > 0 ? off : 0) * b->sr + dur * b->sr) : -1;
@@ -507,6 +694,7 @@ DEF(auSrcLoop, 4,   // (node, loop, loopStart, loopEnd) after start
     ANode *n = &au_N[id]; ABuf *b = &au_B[n->buf];
     n->loop = D(1) != 0; n->ls = llround(D(2) * b->sr); n->le = llround(D(3) * b->sr);
     if (n->ls < 0) n->ls = 0; if (n->le > b->n) n->le = b->n; if (n->le <= n->ls) { n->ls = 0; n->le = b->n; }
+    if (n->st) n->st->ls_valid = 0;
   }
   AU_UNLOCK();)
 DEF(auStop, 2,

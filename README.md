@@ -20,9 +20,38 @@ PocketMZ 是独立的非官方项目，与 KADOKAWA / Gotcha Gotcha Games 无关
 
 ---
 
+## 版本选择、GPU 驱动与主流掌机 SoC 说明
+
+PocketMZ 对外提供两个 PortMaster 发布包，请按你的掌机芯片和系统选择：
+
+| 发布包 | 包含核心 | 适用场景与特点 |
+| --- | --- | --- |
+| **`PocketMZ-ports-beta-*.zip`（β 单核心版，推荐多数掌机）** | 仅 **β 原生运行时** | 体积更小（无需 179 MB 的 NW.js 完整容器），**同时支持开源与闭源 GPU 驱动**（Panfrost / libmali / PowerVR 宿主直通），支持流式音频、完整 MZ Effekseer、虚拟鼠标与 `Select + X` 菜单；不含 NW.js 回退。 |
+| **`PocketMZ-ports-full-*.zip`（双核心完整版）** | **β 原生运行时 + NW.js** | 默认仍优先使用 β；仅当系统使用开源 **`panfrost`** 驱动时，遇到极少数 `.gif` 或特殊 DOM 插件游戏才可自动/手动回退至 NW.js。 |
+
+### 如何切换 GPU 驱动 / 不能切换的系统怎么选？
+
+- **ROCKNIX 切换 GPU 驱动方法**：主菜单按 **`Start` → 系统设置（System Settings）→ 硬件 / 图形（Hardware / Graphics）→ GPU 驱动（GPU Driver）**，可在 **`panfrost`（开源）** 与 **`libmali`（闭源）** 之间切换，切换后需重启生效。
+  - 日常使用 **β 单核心版** 时，两种驱动都可以直接运行；只有需要 **NW.js 回退**时才必须切到 `panfrost`。
+- **系统无法切换 GPU 驱动（ArkOS / muOS / Knulli / 原厂固件等）**：这些系统通常只有闭源 Mali 或 PowerVR 驱动，**请直接下载「β 单核心版」**（NW.js 无法在闭源驱动下启动；β 运行时内置 `POCKETMZ_HOST_GL=auto` 自动直通宿主闭源 GLES 库；极少数老旧/特殊闭源驱动如遇黑屏或报错，可在游戏 `env` 中追加 `PMZ_GLES=2` 强制 ES 2.0）。
+
+### 主流开源掌机 SoC 选型参考（仅支持 64 位 Linux `aarch64`）
+
+| SoC | GPU | 代表机型 | 推荐版本与说明 |
+| --- | --- | --- | --- |
+| **RK3566** | Mali-G52 | GKD Mini Plus、RGB30、RG353 系列、Powkiddy X55 | **ROCKNIX（可切 `panfrost`）**：双核心完整版或 β 单核心版均可；**ArkOS / 闭源系统**：选 **β 单核心版**。 |
+| **RK3326** | Mali-G31 | R36S、RG351 系列、RGB20S | 1 GB 内存 + Cortex-A35 性能较紧，强烈推荐 **β 单核心版**（更省内存与卡空间）。 |
+| **全志 H700** | Mali-G31 MP2 | ANBERNIC RG35XX Plus/H/SP、RG40XX、RG CubeXX | 主流系统（muOS / Knulli / 原厂）均采用闭源驱动或轻量化取向，直接选 **β 单核心版**。 |
+| **全志 A133P** | PowerVR GE8300 | Trimui Smart Pro、Trimui Brick | 仅闭源 PowerVR 驱动，**必须选 β 单核心版**（已支持 PowerVR 宿主库直通，必要时可设 `PMZ_GLES=2`；更多真实机型适配欢迎反馈）。 |
+| **高通骁龙 / RK3588 等高配 aarch64 掌机** | Adreno / Mali-G610 | Odin 2 (Linux)、ROCKNIX 高配机 | 有开源驱动（`freedreno` / `panfrost`）时两个版本均可，按需选双核心完整版或 β 单核心版。 |
+
+> 注意：PocketMZ 仅支持 **64 位 Linux（aarch64）** 掌机系统，不支持 32 位 `armhf` 系统。
+
+---
+
 ## 安装步骤（4 步完成，无需 SSH）
 
-1. 从 [GitHub Releases](../../releases) 下载最新的 **`PocketMZ-ports-*.zip`** 并解压。
+1. 从 [GitHub Releases](../../releases) 根据上方说明下载 **`PocketMZ-ports-beta-*.zip`**（β 单核心版）或 **`PocketMZ-ports-full-*.zip`**（双核心完整版）并解压。
 2. 解压后会得到**两个条目**，将它们**一起**复制到内存卡的 **`roms/ports/`** 根目录：
    ```text
    roms/ports/
@@ -154,9 +183,25 @@ PocketMZ runs **RPG Maker MV and MZ** games on ROCKNIX / PortMaster handhelds (a
 
 **Disclaimer:** 100% AI-written code (Claude / Claude Code and Google Antigravity) guided and hardware-tested by the maintainer. Provided as-is under the MIT license without warranty; no games are included.
 
+### Which Edition Should I Download? (Core, GPU Driver & SoC Guide)
+
+| Edition | Runtimes Included | Best For |
+| --- | --- | --- |
+| **`PocketMZ-ports-beta-*.zip` (β-Only Standalone — Recommended)** | **β native runtime only** | Much smaller download, supports **both open-source and closed-source GPU drivers** (`panfrost`, `libmali`, PowerVR host GL passthrough), streaming Ogg Vorbis audio, full MZ Effekseer, virtual mouse, and `Select + X` menu. No NW.js fallback. |
+| **`PocketMZ-ports-full-*.zip` (Dual-Core Full)** | **β + NW.js fallback** | Still defaults to β, with NW.js available for rare `.gif` or special-DOM plugins when running on open-source **`panfrost`**. |
+
+- **Switching GPU Driver (ROCKNIX)**: Press `Start` → *System Settings* → *Hardware / Graphics* → *GPU Driver* (`panfrost` vs `libmali`, reboot required). β works on both; NW.js requires `panfrost`.
+- **Systems that cannot switch drivers (ArkOS / muOS / Knulli / stock OS)**: Choose **`PocketMZ-ports-beta-*.zip`**. Closed-source GLES drivers are auto-detected via `POCKETMZ_HOST_GL=auto` (set `PMZ_GLES=2` in per-game `env` if a driver lacks ES 3.0).
+- **By SoC (64-bit `aarch64` Linux only; 32-bit `armhf` is not supported)**:
+  - **RK3566** (Mali-G52: GKD Mini Plus, RGB30, RG353, X55): Full or β-only on ROCKNIX (`panfrost`); **β-only** on ArkOS / closed-source setups.
+  - **RK3326** (Mali-G31: R36S, RG351, RGB20S): **β-only** strongly recommended for 1 GB RAM / A35 headroom.
+  - **Allwinner H700** (Mali-G31 MP2: RG35XX Plus/H/SP, RG40XX, RG CubeXX on muOS/Knulli/stock): **β-only**.
+  - **Allwinner A133P** (PowerVR GE8300: Trimui Smart Pro / Brick — closed-source PowerVR only): **β-only** required (`PMZ_GLES=2` if needed; further PowerVR device feedback welcome).
+  - **Snapdragon / RK3588 Linux handhelds**: Either edition on open-source drivers.
+
 ### Installation (4 steps, no SSH)
 
-1. Download **`PocketMZ-ports-*.zip`** from [GitHub Releases](../../releases) and extract it.
+1. Download **`PocketMZ-ports-beta-*.zip`** or **`PocketMZ-ports-full-*.zip`** from [GitHub Releases](../../releases) and extract it.
 2. Copy **both** **`PocketMZ.sh`** and the **`PocketMZ/`** folder directly into **`roms/ports/`** on your SD card (do not wrap them in an extra subfolder).
 3. Put your extracted RPG Maker MV / MZ game folders under **`roms/rpgmaker/`** (subfolders up to 4 levels deep become categories; MZ needs `index.html` + `js/rmmz_core.js`, MV needs `package.json` + `www/index.html` + `www/js/rpg_core.js`; single-`Game.exe` Enigma-packed games must be unpacked first on Windows via `tools/PocketMZ转换器.bat`).
 4. Launch **Ports → PocketMZ** on the handheld. The first run automatically unpacks the runtime to `/storage/pocketmz` (takes ~30 seconds, keeping any existing saves and settings), then opens the game launcher.

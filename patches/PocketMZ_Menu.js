@@ -100,9 +100,13 @@
     let speed = 1;
     // runtime (auto | beta | nw): per game in pocketmz.json ("runtime"), else the global default in settings.json, else auto. The launcher (pocketmz-run.sh) passes
     // POCKETMZ_RT_NOW (the runtime running now), POCKETMZ_RT_GLOBAL (global default) and POCKETMZ_BETA_INST (1 = β installed): /storage is not visible in the game's root.
-    const RT_OPTS = ["nw", "beta", "auto"];
-    const rtEff = () => RT_OPTS.includes(set.runtime) ? set.runtime : RT_OPTS.includes(penv.POCKETMZ_RT_GLOBAL) ? penv.POCKETMZ_RT_GLOBAL : "auto";
-    const rtName = v => v === "beta" ? "β" : v === "auto" ? L.rtAuto : "NW.js";
+    const HAS_NW = penv.POCKETMZ_NW_INST !== "0";
+    const RT_OPTS = HAS_NW ? ["nw", "beta", "auto"] : ["beta"];
+    const rtEff = () => {
+        if (!HAS_NW) return "beta";
+        return RT_OPTS.includes(set.runtime) ? set.runtime : RT_OPTS.includes(penv.POCKETMZ_RT_GLOBAL) ? penv.POCKETMZ_RT_GLOBAL : "auto";
+    };
+    const rtName = v => v === "beta" ? (HAS_NW ? "β" : "β (β-only)") : v === "auto" ? L.rtAuto : "NW.js";
     let rtChanged = false;
     const rtNote = () => {
         const v = rtEff(), now = penv.POCKETMZ_RT_NOW;
@@ -417,7 +421,7 @@
         else if (k === "smooth") { set.smooth = !smoothEff(); save("smooth"); if (typeof window.PMZ_applySmooth === "function") window.PMZ_applySmooth(set.smooth); }
         else if (k === "autosave") { set.autosave = !set.autosave; save("autosave"); }
         else if (k === "stopES") { set.stopES = !set.stopES; save("stopES"); }
-        else if (k === "runtime") { set.runtime = RT_OPTS[(RT_OPTS.indexOf(rtEff()) + (d || 1) + 3) % 3]; rtChanged = true; save("runtime"); }
+        else if (k === "runtime" && HAS_NW) { set.runtime = RT_OPTS[(RT_OPTS.indexOf(rtEff()) + (d || 1) + RT_OPTS.length) % RT_OPTS.length]; rtChanged = true; save("runtime"); }
     };
     // one-time image precompile (PMZ_IMG.prebuild from PocketMZ_Handheld / HandheldMV): runs while
     // the menu is open (the game is paused), progress shown on its page

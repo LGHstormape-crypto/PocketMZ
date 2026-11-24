@@ -229,11 +229,19 @@ pmz_cgroup() {
     echo $$ > "$CG/cgroup.procs" && echo "cgroup $CG high=${MEM_HIGH}M max=${MEM_MAX}M swap=${SWAP_MAX}M"
   fi
 }
+HAS_NW=0
+{ [ -f "$PMZ/rootfs.sqfs" ] || [ -d "$RZ/rootfs" ]; } && HAS_NW=1
+export POCKETMZ_NW_INST=$HAS_NW
+
 RT=auto
 if [ -z "$MENU" ]; then
   RT="${POCKETMZ_GAME_RUNTIME:-$(grep -o '"runtime": *"[a-z]*"' "$POCKETMZ_GAME/pocketmz.json" 2>/dev/null | head -1 | cut -d'"' -f4)}"
   [ -z "$RT" ] && RT=$(gset runtime)
   case "$RT" in nw|beta|auto) ;; *) RT=auto ;; esac
+fi
+if [ "$HAS_NW" != 1 ] && [ "$RT" = nw ]; then
+  echo "NW.js not installed (β-only edition), forcing β"
+  RT=beta
 fi
 BSTAT="$RZ/games/$ID/beta-status.json"
 bs_get() { [ -f "$BSTAT" ] && grep -o "\"$1\": *\"[^\"]*\"" "$BSTAT" | head -1 | cut -d'"' -f4; }
@@ -252,11 +260,17 @@ case "$(gset runtime)" in nw|beta|auto) export POCKETMZ_RT_GLOBAL="$(gset runtim
 if [ -x "$RZ/beta/run-pmzrun.sh" ] && { [ -f "$RZ/beta-runtime.sqfs" ] || [ -d "$RZ/beta/upper24" ]; }; then export POCKETMZ_BETA_INST=1; else export POCKETMZ_BETA_INST=0; fi
 if [ "$RT" = auto ]; then
   if [ "$(bs_get beta)" = "$BVER" ] && [ "$(bs_get game)" = "$SRCSIG" ]; then
-    if grep -q '"ok": *false' "$BSTAT"; then echo "runtime auto: β not OK for this game ($(bs_get reason)), using NW.js"; RT=nw; fi
+    if grep -q '"ok": *false' "$BSTAT"; then
+      if [ "$HAS_NW" = 1 ]; then echo "runtime auto: β not OK for this game ($(bs_get reason)), using NW.js"; RT=nw; fi
+    fi
   else
     BS_T0=$(date +%s%N); BS_WHY=$("$PMZ/pocketmz-betascan.sh" "$SRC"); BS_RC=$?
     echo "β scan: rc=$BS_RC $(( ($(date +%s%N) - BS_T0) / 1000000 )) ms ${BS_WHY}"
-    if [ $BS_RC -ne 0 ]; then bs_write false "scan: $BS_WHY"; RT=nw; else bs_write true "scan ok"; fi
+    if [ $BS_RC -ne 0 ]; then
+      bs_write false "scan: $BS_WHY"
+      if [ "$HAS_NW" = 1 ]; then RT=nw
+      else msg "当前为 β 单核心版，该游戏不兼容 β（$BS_WHY），如需 NW.js 兜底请安装双核心完整版"; sleep 5; exit 1; fi
+    else bs_write true "scan ok"; fi
   fi
 fi
 if [ "$RT" != nw ]; then
@@ -292,6 +306,10 @@ if [ "$RT" != nw ]; then
   fi
   echo "β failed: $BWHY - marking the game and starting it on NW.js"
   bs_write false "$BWHY"
+  if [ "$HAS_NW" != 1 ]; then
+    msg "当前为 β 单核心版，游戏运行失败：$BWHY（如需 NW.js 兜底请在开源驱动系统安装双核心完整版）"
+    sleep 5; exit 1
+  fi
   if [ -n "$GPU_DRV" ] && [ "$GPU_DRV" != "panfrost" ]; then
     msg "β 运行时不兼容这个游戏，且 NW.js 需要 panfrost 驱动"
     sleep 5; exit 1
@@ -299,6 +317,10 @@ if [ "$RT" != nw ]; then
   msg "β 运行时不兼容这个游戏，改用 NW.js 重新启动"
 fi
 # ---- NW.js path (α, unchanged) ----
+if [ "$HAS_NW" != 1 ]; then
+  msg "当前为 β 单核心版，未安装 NW.js 核心"
+  sleep 5; exit 1
+fi
 if [ -n "$GPU_DRV" ] && [ "$GPU_DRV" != "panfrost" ]; then
   msg "NW.js 需要 GPU 驱动 panfrost（可在设置中切换 β 运行时，或 ES 切回 panfrost）"
   sleep 5; exit 1

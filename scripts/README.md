@@ -1,6 +1,6 @@
 # PocketMZ Port 版使用手册
 
-面向 PortMaster / ROCKNIX 掌机的 RPG Maker MV / MZ 运行器。**默认采用 β 轻量运行时（`auto` 优先进 β，不兼容游戏自动回退 NW.js）**，原游戏文件夹只读不写。
+面向 PortMaster / ROCKNIX 掌机（64 位 aarch64）的 RPG Maker MV / MZ 运行器。提供 **β 单核心版**（体积小、通吃开源 `panfrost` 与闭源 `libmali`/`PowerVR` 驱动，推荐 RK3326 / H700 / A133P 及闭源系统）与 **双核心完整版**（`auto` 优先 β，开源 `panfrost` 下可回退 NW.js）；原游戏文件夹全程只读。
 
 ## 1. 安装方法
 

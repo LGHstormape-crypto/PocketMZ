@@ -22,6 +22,17 @@ case "$N" in
   umount) rt_umount; exit 0 ;;
   rt)
     [ -f "$IMG" ] || { echo "no $IMG" >&2; exit 1; }
+    # standalone β-only mode when neither rootfs.sqfs nor rootfs/ exists: mount beta-runtime.sqfs directly on $R
+    if [ ! -f "$RZ/rootfs.sqfs" ] && [ ! -d "$RZ/rootfs" ]; then
+      if is_mounted "$R"; then
+        LD=$(awk -v m="$R" '$2==m {print $1}' /proc/mounts | head -1); LD=${LD##*/}
+        BF=$(cat /sys/block/$LD/loop/backing_file 2>/dev/null)
+        [ "$BF" = "$(readlink -f "$IMG")" ] || rt_umount
+      fi
+      mkdir -p "$R"
+      is_mounted "$R" || mount -t squashfs -o loop,ro "$IMG" "$R" || exit 1
+      echo "$R"; exit 0
+    fi
     # α image: the same mount pocketmz-chroot.sh uses (root-sqfs); without rootfs.sqfs fall back to the maintenance dir
     LOW=$RZ/rootfs
     if [ -f $RZ/rootfs.sqfs ]; then

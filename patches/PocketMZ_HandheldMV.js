@@ -1167,4 +1167,89 @@
             return src;
         };
     }
+
+    // 14. Game_Interpreter.skipBranch jump table (avoid linear re-scan of long event lists)
+    if (String((window.process && process.env && process.env.POCKETMZ_SKIPBRANCH_CACHE) || "on").toLowerCase() !== "off" &&
+        window.Game_Interpreter && Game_Interpreter.prototype.skipBranch &&
+        !Game_Interpreter.prototype.skipBranch._pmzCached) {
+        const origSkip = Game_Interpreter.prototype.skipBranch;
+        if (String(origSkip).includes("this._list[this._index + 1]")) {
+            const branchCache = new WeakMap();
+            const wrapped = function() {
+                const list = this._list;
+                if (!list || !list.length) return origSkip.call(this);
+                let entry = branchCache.get(list);
+                if (!entry || entry.len !== list.length) {
+                    entry = { len: list.length, map: new Map() };
+                    branchCache.set(list, entry);
+                }
+                const indent = this._indent | 0;
+                const key = (this._index << 8) | (indent & 0xff);
+                const cached = entry.map.get(key);
+                if (cached !== undefined && cached >= this._index && cached < list.length &&
+                    (cached + 1 >= list.length || list[cached + 1].indent <= indent)) {
+                    this._index = cached;
+                    return;
+                }
+                origSkip.call(this);
+                entry.map.set(key, this._index);
+            };
+            wrapped._pmzCached = true;
+            Game_Interpreter.prototype.skipBranch = wrapped;
+        }
+    }
+
+    // 15. Game_Interpreter.requestImages deduplication per map/cache generation
+    if (String((window.process && process.env && process.env.POCKETMZ_REQIMG_CACHE) || "on").toLowerCase() !== "off" &&
+        window.Game_Interpreter && typeof Game_Interpreter.requestImages === "function" &&
+        !Game_Interpreter.requestImages._pmzDedup) {
+        let reqImgGen = 0;
+        const reqSeen = new WeakMap();
+        if (window.ImageManager && ImageManager.clear) {
+            const _mvClear = ImageManager.clear;
+            ImageManager.clear = function() {
+                reqImgGen++;
+                return _mvClear.apply(this, arguments);
+            };
+        }
+        if (window.Scene_Map && Scene_Map.prototype.create) {
+            const _mvMapCreate = Scene_Map.prototype.create;
+            Scene_Map.prototype.create = function() {
+                reqImgGen++;
+                return _mvMapCreate.apply(this, arguments);
+            };
+        }
+        const _origReqImages = Game_Interpreter.requestImages;
+        const wrappedReq = function(list, commonList) {
+            if (!commonList && Array.isArray(list) && list.length > 0) {
+                if (reqSeen.get(list) === reqImgGen) return;
+                reqSeen.set(list, reqImgGen);
+            }
+            return _origReqImages.apply(this, arguments);
+        };
+        wrappedReq._pmzDedup = true;
+        Game_Interpreter.requestImages = wrappedReq;
+    }
+
+    // 16. WindowLayer.renderWebGL skip when no visible children (avoid empty stencil/mask pass)
+    if (String((window.process && process.env && process.env.POCKETMZ_WINLAYER_SKIP) || "on").toLowerCase() !== "off" &&
+        window.WindowLayer && WindowLayer.prototype.renderWebGL &&
+        !WindowLayer.prototype.renderWebGL._pmzSkip) {
+        const _wlRender = WindowLayer.prototype.renderWebGL;
+        const wrappedWl = function(renderer) {
+            if (!this.visible || this.worldAlpha <= 0) return;
+            const ch = this.children;
+            let any = false;
+            if (ch) {
+                for (let i = 0; i < ch.length; i++) {
+                    const c = ch[i];
+                    if (c && c.visible && c.alpha > 0) { any = true; break; }
+                }
+            }
+            if (!any) return;
+            return _wlRender.apply(this, arguments);
+        };
+        wrappedWl._pmzSkip = true;
+        WindowLayer.prototype.renderWebGL = wrappedWl;
+    }
 })();

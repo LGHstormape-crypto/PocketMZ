@@ -206,6 +206,10 @@ INFO_KEYS = ("version", "games", "withSaves", "dataSize", "free")
 DEFAULTS = {"defaultFps": 30, "renderScale": "auto", "smooth": False, "stopES": False, "runtime": "auto"}
 
 
+def has_nw():
+    return os.path.isfile(os.path.join(RZ, "rootfs.sqfs")) or os.path.isdir(os.path.join(RZ, "rootfs"))
+
+
 def settings_path():
     return os.path.join(RZ, "settings.json")
 
@@ -1315,8 +1319,9 @@ class Menu:
              "show": lambda v: T["on"] if v else T["off"]},
             {"label": T["d_stopes"], "cycle": "stopES", "opts": [False, True],
              "show": lambda v: T["on"] if v else T["off"]},
-            {"label": T["d_runtime"], "cycle": "runtime", "opts": ["nw", "beta", "auto"],
-             "show": lambda v: {"nw": "NW.js", "beta": "β", "auto": T["rt_auto"]}[v]},
+            {"label": T["d_runtime"], "cycle": "runtime",
+             "opts": ["nw", "beta", "auto"] if has_nw() else ["beta"],
+             "show": lambda v: {"nw": "NW.js", "beta": "β" if has_nw() else "β (β-only)", "auto": T["rt_auto"]}.get(v, "β (β-only)")},
         ], note=T["d_note"], hint=T["hint_cycle"])
 
     def saves_page(self):
