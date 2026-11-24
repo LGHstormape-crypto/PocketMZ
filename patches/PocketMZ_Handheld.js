@@ -1691,16 +1691,35 @@
                 }
             }
             gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
-            const u = this._shader.uniforms;
-            for (let t = 0; t < 3; t++) {
-                const a = this._internalTextures[t];
-                const v = u["uSize" + t];
-                v[0] = a.width;
-                v[1] = a.height;
-                u["uSize" + t] = v;
+            const u = this._shader && this._shader.uniforms;
+            if (u) {
+                for (let t = 0; t < 3; t++) {
+                    const a = this._internalTextures[t];
+                    if (!a) continue;
+                    const v = u["uSize" + t];
+                    if (v) {
+                        v[0] = a.width;
+                        v[1] = a.height;
+                        u["uSize" + t] = v;
+                    } else if (u.uSamplerSize && u.uSamplerSize.length >= (t + 1) * 2) {
+                        u.uSamplerSize[2 * t] = 1 / a.width;
+                        u.uSamplerSize[2 * t + 1] = 1 / a.height;
+                    }
+                }
+                if (u.uSamplerSize) u.uSamplerSize = u.uSamplerSize;
             }
             renderer.shader.bind(this._shader);
         };
+        if (window.UltraMode7 && typeof UltraMode7.generateFragmentShader === "function") {
+            const origUm7Frag = UltraMode7.generateFragmentShader;
+            UltraMode7.generateFragmentShader = function() {
+                let src = origUm7Frag.apply(this, arguments);
+                if (typeof src === "string" && !/\bprecision\s+(lowp|mediump|highp)\s+float\b/.test(src)) {
+                    src = "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" + src;
+                }
+                return src;
+            };
+        }
     }
 
     // 7. Audio sample rate
