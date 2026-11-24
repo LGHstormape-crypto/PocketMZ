@@ -111,7 +111,14 @@ static void vid_mix_audio(float *aL, float *aR, int n, int rate) {
 static double vid_clock(PmzVid *v) {
   if (au_dev && v->hasAudio && v->audioBaseSet) {
     uint64_t played = __atomic_load_n(&v->arPos, __ATOMIC_ACQUIRE);
-    return v->audioBasePts + (double)played / (double)(v->arate > 0 ? v->arate : 44100);
+    uint64_t written = __atomic_load_n(&v->awPos, __ATOMIC_ACQUIRE);
+    double aclk = v->audioBasePts + (double)played / (double)(v->arate > 0 ? v->arate : 44100);
+    if (played < written) {
+      v->wallPts = aclk;
+      v->wallBase = vid_now_sec();
+      return aclk;
+    }
+    // Audio ring drained (audio ended before video, EOF video flush, or gap): continue on monotonic wall clock.
   }
   if (!v->playing) return v->wallPts;
   return v->wallPts + (vid_now_sec() - v->wallBase);
@@ -119,13 +126,22 @@ static double vid_clock(PmzVid *v) {
 
 static void vid_push_audio(PmzVid *v, const int16_t *pcm, int frames, double pts) {
   if (!au_dev || !v->aring || frames <= 0) return;
-  if (!v->audioBaseSet) { v->audioBasePts = pts >= 0 ? pts : 0.0; v->audioBaseSet = 1; }
+  if (!v->audioBaseSet) {
+    v->audioBasePts = pts >= 0 ? pts : 0.0;
+    v->wallPts = v->audioBasePts;
+    v->wallBase = vid_now_sec();
+    v->audioBaseSet = 1;
+  }
   int off = 0;
   while (off < frames && !v->closing && v->seekReq < 0) {
     uint64_t r = __atomic_load_n(&v->arPos, __ATOMIC_ACQUIRE);
     uint64_t w = __atomic_load_n(&v->awPos, __ATOMIC_RELAXED);
     uint64_t freeF = (uint64_t)VID_ARING - (w - r);
-    if (freeF < 64) { SDL_Delay(5); continue; }
+    if (freeF < 64) {
+      if (!v->ready && !__atomic_load_n(&v->playing, __ATOMIC_ACQUIRE)) break;
+      SDL_Delay(5);
+      continue;
+    }
     int put = frames - off;
     if ((uint64_t)put > freeF) put = (int)freeF;
     for (int i = 0; i < put; i++) {
@@ -145,13 +161,15 @@ static void vid_publish_frame(PmzVid *v, AVFrame *vf, double pts, int isFirst) {
   sws_scale(v->sws, (const uint8_t *const *)vf->data, vf->linesize, 0, v->srcH, dst, stride);
 
   if (!isFirst && v->playing && pts >= 0) {
+    double waitStart = vid_now_sec();
     for (;;) {
       if (v->closing || v->seekReq >= 0) return;
-      if (!v->playing) { SDL_Delay(8); continue; }
+      if (!v->playing) { waitStart = vid_now_sec(); SDL_Delay(8); continue; }
       double clk = vid_clock(v);
       double diff = pts - clk;
       if (diff <= 0.004) break;
       if (diff > 2.0) break;   // guard against huge PTS jump
+      if (vid_now_sec() - waitStart > 2.5) break;   // safety ceiling: never stall indefinitely
       SDL_Delay(diff > 0.015 ? 8 : 3);
     }
   }
