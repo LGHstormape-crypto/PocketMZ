@@ -11,14 +11,24 @@ RZ="${POCKETMZ_DATA:-/storage/pocketmz}"                 # data (menu state and 
 L="$RZ/launcher/library"
 mkdir -p "$L"
 . /etc/profile >/dev/null 2>&1
-case "$(get_setting system.language 2>/dev/null)" in
-  ja*) T_BACK="PocketMZ に戻っています…" ;;
-  zh*) T_BACK="正在返回 PocketMZ…" ;;
-  *)   T_BACK="Returning to PocketMZ…" ;;
-esac
+refresh_lang() {
+  local sl=""
+  [ -f "$RZ/settings.json" ] && sl=$(grep -o '"language": *"[^"]*"' "$RZ/settings.json" 2>/dev/null | head -1 | cut -d'"' -f4)
+  case "$sl" in
+    zh|en|ja) POCKETMZ_UI_LANG="$sl" ;;
+    *) POCKETMZ_UI_LANG="$(get_setting system.language 2>/dev/null)"; [ -z "$POCKETMZ_UI_LANG" ] && POCKETMZ_UI_LANG="${LANG:-zh_CN}" ;;
+  esac
+  export POCKETMZ_UI_LANG
+  case "$POCKETMZ_UI_LANG" in
+    ja*) T_BACK="PocketMZ に戻っています…" ;;
+    zh*) T_BACK="正在返回 PocketMZ…" ;;
+    *)   T_BACK="Returning to PocketMZ…" ;;
+  esac
+}
+refresh_lang
 note() { command -v mako-notify >/dev/null && mako-notify "$1" >/dev/null 2>&1; }
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}"
-export SWAYSOCK="${SWAYSOCK:-$XDG_RUNTIME_DIR/sway-ipc.0.sock}" POCKETMZ_UI_LANG="$(get_setting system.language 2>/dev/null)"
+export SWAYSOCK="${SWAYSOCK:-$XDG_RUNTIME_DIR/sway-ipc.0.sock}"
 # The menu: native SDL2 (pocketmz-launcher.py, opens in ~1 s, reads the pad itself) when the
 # system's SDL2 libraries load; else the HTML page in NW.js (pocketmz-run.sh --menu, ~20 s).
 # POCKETMZ_HTML_MENU=1 forces the HTML one.
@@ -56,8 +66,10 @@ print(" ".join("%s=%s" % (k.upper(), shlex.quote(str(c.get(k, "")))) for k in ("
 PY
 )
   eval "$CHOICE"
+  refresh_lang
   [ "$ACTION" = play ] && [ -d "$DIR" ] || break
   "$PMZ/pocketmz-run.sh" "$DIR" "$ID"
+  refresh_lang
   note "$T_BACK"
 done
 exit 0

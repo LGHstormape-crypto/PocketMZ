@@ -24,7 +24,7 @@ const text = el => { let t = el.textContent || ''; if (!t && el.children) t = el
 const cls = el => String(el.className || '').split(/\s+/);
 
 function create(opts) {
-  const { doc, W = 640, H = 480, getCursor = null } = opts;
+  const { doc, W = 640, H = 480, getCursor = null, getViewport = null } = opts;
   const canvas = doc.createElement('canvas'); canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
   let lastSig = null, lastDomSig = '', visible = false;
@@ -47,23 +47,25 @@ function create(opts) {
     ctx.font = (bold ? 'bold ' : '') + size + 'px ' + FONT; ctx.fillStyle = col; ctx.textAlign = align || 'left'; ctx.textBaseline = 'middle';
     ctx.fillText(t, x, y);
   }
-  function fixedBox(el, css) {   // small position:fixed text box (fps counter, toast, title hint)
+  function fixedBox(el, css, vp) {   // small position:fixed text box (fps counter, toast, title hint)
     const t = text(el); if (!t) return;
     const fm = /([\d.]+)px/.exec(css.font || ''), size = fm ? parseFloat(fm[1]) : 14;
     ctx.font = size + 'px ' + FONT;
     const pad = String(css.padding || '2px 6px').split(/\s+/).map(px), pv = pad[0] || 2, ph = pad.length > 1 ? pad[1] : pv;
     const w = Math.ceil(ctx.measureText(t).width) + ph * 2, h = Math.ceil(size * 1.4) + pv * 2;
     let x, y;
-    if (css.left !== undefined && /%$/.test(css.left)) x = W * parseFloat(css.left) / 100 - (/translatex\(-50%\)/i.test(css.transform || '') ? w / 2 : 0);
-    else if (css.left !== undefined) x = px(css.left); else if (css.right !== undefined) x = W - px(css.right) - w; else x = 0;
-    if (css.top !== undefined) y = px(css.top); else if (css.bottom !== undefined) y = H - px(css.bottom) - h; else y = 0;
+    if (css.left !== undefined && /%$/.test(css.left)) x = vp.x0 + vp.w * parseFloat(css.left) / 100 - (/translatex\(-50%\)/i.test(css.transform || '') ? w / 2 : 0);
+    else if (css.left !== undefined) x = vp.x0 + px(css.left); else if (css.right !== undefined) x = vp.x0 + vp.w - px(css.right) - w; else x = vp.x0;
+    if (css.top !== undefined) y = vp.y0 + px(css.top); else if (css.bottom !== undefined) y = vp.y0 + vp.h - px(css.bottom) - h; else y = vp.y0;
+    x = Math.max(vp.x0, Math.min(x, Math.max(vp.x0, vp.x0 + vp.w - w)));
+    y = Math.max(vp.y0, Math.min(y, Math.max(vp.y0, vp.y0 + vp.h - h)));
     rrect(x, y, w, h, px(css['border-radius']) || 0, color(css.background || 'rgba(0,0,0,.6)'));
     str(t, x + ph, y + h / 2, size, color(css.color || '#fff'));
   }
-  function menu(layer) {
+  function menu(layer, vp) {
     ctx.fillStyle = 'rgba(10,12,16,0.72)'; ctx.fillRect(0, 0, W, H);
     const box = layer.children[0]; if (!box) return;
-    const bw = Math.min(560, W * 0.92), maxH = H * 0.96, padX = 14, padY = 12, inner = bw - padX * 2 - 2;
+    const bw = Math.min(560, vp.w * 0.92), maxH = vp.h * 0.96, padX = 14, padY = 12, inner = bw - padX * 2 - 2;
     // pass 1: heights
     const m = [];   // {kind, el, h, lines}
     const measure = (list, out) => {
@@ -86,7 +88,7 @@ function create(opts) {
     measure(box.children, m);
     let total = m.reduce((a, b) => a + b.h, 0) + padY * 2 + 2;
     let boxH = Math.min(total, maxH);
-    const bx = Math.round((W - bw) / 2), by = Math.round((H - boxH) / 2);
+    const bx = Math.round(vp.x0 + (vp.w - bw) / 2), by = Math.round(vp.y0 + (vp.h - boxH) / 2);
     rrect(bx + 0.5, by + 0.5, bw - 1, boxH - 1, 8, color('#1b1f29'), color('#2e3446'));
     ctx.save(); ctx.beginPath(); ctx.rect(bx, by, bw, boxH); ctx.clip();
     const x0 = bx + 1 + padX, w0 = inner;
@@ -155,7 +157,8 @@ function create(opts) {
       visible = false; lastSig = null; lastDomSig = '';
       return was ? 'hide' : null;
     }
-    const domSig = live.map(l => l.menu ? 'M' + JSON.stringify((function dump(e) { return [e.className, text(e), (e.children || []).map(dump)]; })(l.el)) : 'F' + text(l.el) + '|' + (l.el.style && l.el.style.cssText)).join('#');
+    const vp = getViewport ? getViewport() : { x0: 0, y0: 0, w: W, h: H };
+    const domSig = vp.x0 + ',' + vp.y0 + ',' + vp.w + ',' + vp.h + '|' + live.map(l => l.menu ? 'M' + JSON.stringify((function dump(e) { return [e.className, text(e), (e.children || []).map(dump)]; })(l.el)) : 'F' + text(l.el) + '|' + (l.el.style && l.el.style.cssText)).join('#');
     const curSig = cur ? (cur.x + ',' + cur.y + ',' + (cur.down ? 1 : 0)) : '';
     const sig = domSig + '@@' + curSig;
     api.domChanged = domSig !== lastDomSig;
@@ -164,7 +167,7 @@ function create(opts) {
     lastSig = sig;
     lastDomSig = domSig;
     ctx.clearRect(0, 0, W, H);
-    for (const l of live) { try { if (l.menu) menu(l.el); else fixedBox(l.el, l.css); } catch (e) { console.log('overlay draw error', e && e.stack); } }
+    for (const l of live) { try { if (l.menu) menu(l.el, vp); else fixedBox(l.el, l.css, vp); } catch (e) { console.log('overlay draw error', e && e.stack); } }
     if (cur) { try { drawCursor(cur); } catch (e) { console.log('overlay cursor error', e && e.stack); } }
     return 'draw';
   }

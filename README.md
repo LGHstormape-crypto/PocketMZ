@@ -143,6 +143,47 @@ PocketMZ 对外提供两个 PortMaster 发布包，请按你的掌机芯片和�
 - **运行时切换（自动默认 β / β / NW.js）**：默认优先跑 **β**；若遇到个别不支持的游戏可切 `NW.js`（需系统 GPU 驱动为 `panfrost`）。
 - **存档备份恢复**：一键回退至任意一次启动前自动备份的快照。
 
+### 界面语言切换（简体中文 / English / 日本語）
+
+- 在 PocketMZ 启动器界面按 **`Start` → 界面语言（Language / 言語）**，可随时在 **`跟随系统 / 简体中文 / English / 日本語`** 之间实时切换（无需重启），游戏内 **`Select + X` 菜单**与返回提示会自动同步使用所选语言。
+
+### 通用性能与内存优化
+
+- 内置针对 1 GB 内存掌机的通用引擎级优化（非针对单个游戏）：Panfrost 显存弱引用自动回收、游戏期间 `vm.swappiness=10` 防无谓换页、MV 中性 `ToneFilter` 全屏离屏跳过、非重叠窗口直画旁路、闲置关闭窗口/空事件/空图片跳过、流式 Ogg Vorbis 音频、大图一次性按屏降采样缓存，以及非 4:3 宽屏游戏的 β FPS 叠层视口适配。
+
+---
+
+## PC 端转换器使用说明（PocketMZ Converter）
+
+当遇到以下两类 RPG Maker MV/MZ 游戏时，需要先在电脑上用转换器处理后再拷入掌机 `roms/rpgmaker/`：
+1. **单文件 / 半封包 `Game.exe`（Enigma Virtual Box）**：游戏目录里没有完整的 `js/` / `data/`（或只有 `index.html` 与打包的 `Game.exe`）。转换器会在**不运行 `Game.exe`** 的前提下静态解包出脚本和数据并剔除 Windows 无用运行库。
+2. **高码率视频卡顿（可选）**：将 720p/1080p 及以上的过场视频按比例转码为 480p/720p（保持原有编码格式），大幅减小体积并保证掌机流畅播放。
+
+### 准备工作
+
+- 从 [GitHub Releases](../../releases) 下载 **`PocketMZ-Converter-*.zip`** 并解压（或直接使用本仓库 `tools/` 目录）。
+- 需要安装 **Python 3**（Windows 勾选 `Add Python to PATH`）：
+  - 解包 `Game.exe` 依赖 `evbunpack`：`pip install https://github.com/mos9527/evbunpack/archive/refs/heads/main.zip`
+  - 视频转码依赖 `ffmpeg`：Windows 可运行 `winget install Gyan.FFmpeg`
+
+### 图形界面用法（推荐）
+
+- 双击 **`PocketMZ转换器.bat`** 打开图形界面，或直接把**游戏文件夹 / 压缩包（`.zip`/`.7z`/`.rar`）**拖放到 `.bat` 上。
+- 勾选需要的选项（如「视频压缩 480p」），设置输出目录后点击开始转换；也可勾选「转换后发送到掌机」通过 SSH/SCP 直传至 `rocknix.local`。
+
+### 命令行用法
+
+```bash
+# 基本解包与精简（自动识别 MV/MZ 及全封包/半封包 Game.exe）
+python pocketmz-convert.py "D:\Games\MyGame" -o "D:\Converted"
+
+# 顺便将高于 480p 的视频转码为 480p（支持 --video-height 720）
+python pocketmz-convert.py "D:\Games\MyGame" -o "D:\Converted" --video --video-height 480
+
+# 转换后直接发送到掌机（默认路径 /storage/roms/rpgmaker/）
+python pocketmz-convert.py "D:\Games\MyGame" -o "D:\Converted" --send --host rocknix.local
+```
+
 ---
 
 ## 更新与卸载
@@ -216,10 +257,22 @@ The **very first time you start each game**, PocketMZ builds its symlinked thin 
 - All saves live on your SD card at **`roms/savestates/rpgmz/<game-id>/save/`**, shared between β and NW.js and preserved across updates or OS reflashes.
 - Up to **5 rolling pre-launch backups** are kept in **`roms/savestates/rpgmz/<game-id>/save-backups/`** and can be restored from the `Select + X` menu.
 
-### Controls
+### Controls & Language Switching
 
 - **`Select + X`**: Open / close the in-game **PocketMZ menu** (pause, 30/60 FPS cap, 1x–3x speed, FPS display, volume, render scale, smooth scaling, auto save/load, β / NW.js switcher, per-game key mapping, save backup restore, quit).
 - **`Select + Start`**: Quit game and return to the PocketMZ launcher.
 - Right stick acts as a virtual mouse pointer (`L3`/`R3` = right/left click), configurable per game inside `Select + X`.
+- **Language Switch (`简体中文 / English / 日本語`)**: Press **`Start`** in the PocketMZ launcher → **`Language`**, cycle between `Auto (System) / 简体中文 / English / 日本語` for instant live switching; both the launcher and the in-game `Select + X` menu follow this setting.
+
+### PC Converter (`PocketMZ-Converter-*.zip` / `tools/`)
+
+Use the PC converter before copying games to `roms/rpgmaker/` if a game is **packed into a single/partial `Game.exe`** (Enigma Virtual Box) or has **high-resolution cutscenes** that benefit from 480p/720p downscaling on 1 GB handhelds (unpacked statically without ever executing `Game.exe`):
+
+1. Download **`PocketMZ-Converter-*.zip`** from [GitHub Releases](../../releases) (or use `tools/` in this repo).
+2. Install **Python 3**, plus `evbunpack` (`pip install https://github.com/mos9527/evbunpack/archive/refs/heads/main.zip`) for `.exe` unpacking and `ffmpeg` (`winget install Gyan.FFmpeg` on Windows) for optional video transcoding.
+3. Double-click **`PocketMZ转换器.bat`** (or drag-and-drop game folders/archives onto it) for the GUI, or run the CLI:
+   ```bash
+   python pocketmz-convert.py "<game_dir_or_archive>" -o "<out_dir>" --video --video-height 480
+   ```
 
 **License:** MIT (`LICENSE`). No binaries are committed to this repository.

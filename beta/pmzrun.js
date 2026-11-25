@@ -15,8 +15,9 @@ const SHOT4 = process.env.SHOT4 || '/opt/beta/shots/map-beta-play.png';
 const SHOT5 = process.env.SHOT5 || '/opt/beta/shots/map-beta-walk.png';
 const SHOT2 = process.env.SHOT2 || SHOT.replace(/title-beta/, 'options-beta');
 const GLDEBUG = process.env.PMZ_GLDEBUG === '1';
-// MODE=test (default): scripted harness, physical input only logged. MODE=play: boot and run the game normally (quit: F2+Start / window close).
+// MODE=test (default): scripted harness, physical input only logged. MODE=play: boot and run the game normally (quit: Select+Start / window close).
 const PLAY = process.env.MODE === 'play';
+const PROBE_FILE = process.env.PMZ_PROBE_FILE || '';
 // PMZ_GUARD=1 (set by pocketmz-run.sh when the game is started on β, play mode only): runtime compatibility guard. Boot problems (uncaught error / unhandled
 // rejection, a failed plugin that is not whitelisted, a GL error, no first scene after Scene_Boot within PMZ_GUARD_BOOT_SEC = 40 s) and COMPAT events during play
 // (video, m4a/mp4/... files) end the run with exit code 3 after writing the reason to PMZ_FAIL_FILE; the launcher then marks the game "β not OK" and starts it on NW.js.
@@ -195,9 +196,14 @@ function frameLoop() {
       pmz.swap();
       tEnd = nowMs();
       if (PLAY && frames.length > 4000) frames.splice(0, 2000);   // play mode runs for hours
-      frames.push({ t: tEnd, dt: lastFrameStart ? tStart - lastFrameStart : 0, js: tJs - tStart, swap: tEnd - tJs });
+      const fdt = lastFrameStart ? tStart - lastFrameStart : 0;
+      const fjs = tJs - tStart, fsw = tEnd - tJs;
+      frames.push({ t: tEnd, dt: fdt, js: fjs, swap: fsw });
+      if (PROBE_FILE && frames.length > 1) probeOnFrame(fdt, fjs, fsw, false);
       if (frames.length === 1) { timings.firstFrameAt = proc.uptime(); log('first frame'); }
       lastFrameStart = tStart;
+    } else if (PROBE_FILE && tJs - tStart >= 100) {
+      probeOnFrame(tJs - tStart, tJs - tStart, 0, true);
     }
     const rem = nextTickAt - tEnd;
     if (rem > 1.5) setTimeout(frameLoop, Math.round(rem));
@@ -224,6 +230,83 @@ function frameStats(t0, t1) {
   return { frames: fr.length, fps: +(1000 / avg(dts)).toFixed(1), avgMs: +avg(dts).toFixed(2), p50: +q(0.5).toFixed(2), p95: +q(0.95).toFixed(2), p99: +q(0.99).toFixed(2), maxMs: +dts[dts.length - 1].toFixed(2),
     over20: dts.filter(d => d > 20).length, over33: dts.filter(d => d > 33).length, jsAvgMs: +avg(fr.map(f => f.js)).toFixed(2), swapAvgMs: +avg(fr.map(f => f.swap)).toFixed(2) };
 }
+
+// ---------- continuous + event-driven telemetry probe (when PMZ_PROBE_FILE is set) ----------
+let probeLastT = nowMs(), probeScene = '', probeMap = -1;
+const probePendingEvents = [];
+function probeCurState() {
+  let scene = '', mapId = 0;
+  try { if (typeof SceneManager !== 'undefined' && SceneManager._scene && SceneManager._scene.constructor) scene = SceneManager._scene.constructor.name || ''; } catch (e) {}
+  try { if (typeof $gameMap !== 'undefined' && $gameMap && typeof $gameMap.mapId === 'function') mapId = $gameMap.mapId() || 0; } catch (e) {}
+  return { scene, mapId };
+}
+function probeOnFrame(dt, js, swap, noDraw) {
+  const st = probeCurState();
+  if (dt >= 100 && probePendingEvents.length < 200) {
+    probePendingEvents.push({
+      ev: 'stutter', ts: +(Date.now() / 1000).toFixed(2), up: +proc.uptime().toFixed(2),
+      dt: +dt.toFixed(1), js: +js.toFixed(1), swap: +swap.toFixed(1), noDraw: noDraw ? 1 : undefined,
+      scene: st.scene, mapId: st.mapId, heapMB: +(proc.memoryUsage().heapUsed / 1048576).toFixed(1),
+    });
+  }
+  if (st.scene !== probeScene || st.mapId !== probeMap) {
+    if (probePendingEvents.length < 200) {
+      probePendingEvents.push({
+        ev: 'scene', ts: +(Date.now() / 1000).toFixed(2), up: +proc.uptime().toFixed(2),
+        from: probeScene, to: st.scene, mapFrom: probeMap, mapTo: st.mapId,
+        heapMB: +(proc.memoryUsage().heapUsed / 1048576).toFixed(1),
+        canvasMB: +MB(acct.canvasLive).toFixed(1), canvasN: acct.canvasCount,
+        imageMB: +MB(acct.imageLive).toFixed(1), imageN: acct.imageCount,
+        glGc: mainGL && mainGL._gcStats ? Object.assign({}, mainGL._gcStats) : null,
+      });
+    }
+    probeScene = st.scene;
+    probeMap = st.mapId;
+  }
+}
+function flushProbe() {
+  if (!PROBE_FILE) return;
+  try {
+    const t0 = probeLastT, t1 = nowMs();
+    probeLastT = t1;
+    const fr = frames.filter(f => f.t > t0 && f.t <= t1 && f.dt > 0 && f.dt < 2000);
+    let win = null;
+    if (fr.length) {
+      const dts = fr.map(f => f.dt).sort((a, b) => a - b);
+      const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
+      const q = p => dts[Math.min(dts.length - 1, Math.floor(p * dts.length))];
+      win = {
+        n: fr.length, fps: +(1000 / avg(dts)).toFixed(1), avgMs: +avg(dts).toFixed(2),
+        p50: +q(0.5).toFixed(1), p95: +q(0.95).toFixed(1), p99: +q(0.99).toFixed(1), maxMs: +dts[dts.length - 1].toFixed(1),
+        over33: dts.filter(d => d > 33).length, over50: dts.filter(d => d > 50).length, over100: dts.filter(d => d > 100).length,
+        jsAvg: +avg(fr.map(f => f.js)).toFixed(2), swapAvg: +avg(fr.map(f => f.swap)).toFixed(2),
+      };
+    }
+    const st = probeCurState(), mu = proc.memoryUsage();
+    let auBufMB = null, auOver50 = null;
+    try {
+      if (pmz.auStats) {
+        const as = pmz.auStats();
+        if (as) { auBufMB = +MB(as.bufferBytes || 0).toFixed(1); auOver50 = as.over50pct || 0; }
+      }
+    } catch (e) {}
+    const lines = probePendingEvents.splice(0, probePendingEvents.length).map(e => JSON.stringify(e));
+    lines.push(JSON.stringify({
+      ev: 'win', ts: +(Date.now() / 1000).toFixed(2), up: +proc.uptime().toFixed(2),
+      scene: st.scene, mapId: st.mapId, win,
+      heapMB: +MB(mu.heapUsed).toFixed(1), extMB: +MB(mu.external).toFixed(1), abMB: +MB(mu.arrayBuffers).toFixed(1),
+      canvasMB: +MB(acct.canvasLive).toFixed(1), canvasN: acct.canvasCount,
+      imageMB: +MB(acct.imageLive).toFixed(1), imageN: acct.imageCount,
+      glGc: mainGL && mainGL._gcStats ? Object.assign({}, mainGL._gcStats) : null,
+      glErrs: typeof glMessages !== 'undefined' ? glMessages.length : 0,
+      otherErrs: typeof otherErrors !== 'undefined' ? otherErrors.length : 0,
+      snaps: globalThis.PMZ_IMG ? (globalThis.PMZ_IMG.snaps || 0) : 0,
+      auBufMB, auOver50,
+    }));
+    fs.appendFileSync(PROBE_FILE, lines.join('\n') + '\n');
+  } catch (e) {}
+}
+if (PROBE_FILE) setInterval(flushProbe, 5000).unref();
 
 // ---------- DOM shims ----------
 const listenersOf = o => o._ls || (o._ls = {});
@@ -272,9 +355,9 @@ class FakeElement {
   dispatchEvent(ev) { fire(this, ev.type, ev); return true; }
   getBoundingClientRect() { return this === mainCanvas ? canvasScreenRect(this) : { left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 }; }
   focus() {} blur() {} click() {} scrollIntoView() {}
-  querySelector() { return null; } querySelectorAll() { return []; }
-  // tree walk (MV Utils.canReadGameFiles() asks for the last <script>; _modifyExistingElements for '*')
-  getElementsByTagName(tag) { const t = String(tag).toUpperCase(), r = []; const walk = n => { for (const c of n.children || []) { if (t === '*' || c.tagName === t) r.push(c); walk(c); } }; walk(this); return r; }
+  querySelector(sel) { const s = String(sel || '').trim(); if (!s) return null; if (s[0] === '#') return ids[s.slice(1)] || null; const m = this.getElementsByTagName(s); return m[0] || null; } querySelectorAll() { const r = []; r.item = i => r[i] || null; return r; }
+  // tree walk (MV Utils.canReadGameFiles() asks for the last <script>; _modifyExistingElements for '*'; Graphics.loadFont for head.item(0))
+  getElementsByTagName(tag) { const t = String(tag).toUpperCase(), r = []; const walk = n => { for (const c of n.children || []) { if (t === '*' || c.tagName === t) r.push(c); walk(c); } }; walk(this); r.item = i => r[i] || null; return r; }
   get offsetLeft() { return this === mainCanvas ? canvasScreenRect(this).left : 0; }
   get offsetTop() { return this === mainCanvas ? canvasScreenRect(this).top : 0; }
   get offsetWidth() { return this === mainCanvas ? canvasScreenRect(this).width : 640; }
@@ -661,6 +744,8 @@ def('requestIdleCallback', f => setTimeout(() => f({ timeRemaining: () => 10 }),
 def('HTMLElement', FakeElement); def('HTMLCanvasElement', c2d.HTMLCanvasElement); def('CanvasRenderingContext2D', c2d.CanvasRenderingContext2D); def('ImageData', c2d.ImageData); def('CanvasGradient', c2d.CanvasGradient); def('CanvasPattern', c2d.CanvasPattern); def('HTMLImageElement', FakeImage); def('Image', FakeImage); def('XMLDocument', class XMLDocument {});   // PIXI BitmapFontLoader: data instanceof XMLDocument (XML fonts are not parsed: no DOMParser)
 def('HTMLVideoElement', FakeMedia); def('HTMLAudioElement', FakeMedia); def('Audio', FakeMedia);
 def('Blob', FakeBlob); def('XMLHttpRequest', FakeXHR); def('fetch', fakeFetch); def('FontFace', FakeFontFace);
+def('MediaRecorder', class MediaRecorder { constructor() { this.state = 'inactive'; } static isTypeSupported() { return false; } start() {} stop() {} pause() {} resume() {} addEventListener() {} removeEventListener() {} });
+def('MediaStream', class MediaStream { constructor(t) { this._tracks = t || []; } getTracks() { return this._tracks; } getVideoTracks() { return []; } getAudioTracks() { return []; } });
 def('FinalizationRegistry', FinalizationRegistry);
 const ls = new Map();
 def('localStorage', { getItem: k => ls.has(k) ? ls.get(k) : null, setItem: (k, v) => ls.set(k, String(v)), removeItem: k => ls.delete(k), clear: () => ls.clear(), key: i => [...ls.keys()][i] || null, get length() { return ls.size; } });
@@ -685,6 +770,33 @@ const doc = Object.assign(new FakeElement('#document'), {
     if (tag === 'canvas') return new c2d.HTMLCanvasElement();
     if (tag === 'img') return new FakeImage();
     if (tag === 'video' || tag === 'audio') return new FakeMedia(tag);
+    if (tag === 'style') {
+      const el = new FakeElement('style');
+      el.sheet = {
+        cssRules: [],
+        insertRule(rule, idx) {
+          const r = String(rule || '');
+          this.cssRules.splice(idx || 0, 0, { cssText: r });
+          if (/@font-face\b/i.test(r)) {
+            const fam = /font-family\s*:\s*([^;}\n]+)/i.exec(r);
+            const src = /url\(\s*(['"]?)([^'")]+)\1\s*\)/i.exec(r);
+            if (fam && src) {
+              const rawUrl = decodeURI(src[2].split('?')[0]);
+              const file = path.isAbsolute(rawUrl) ? rawUrl : resolvePath(rawUrl);
+              try {
+                const f = new FakeFontFace(fam[1], 'url(' + file + ')');
+                c2d.fontSet.add(f);
+                f.load().then(() => log('font ' + f.family + ' <- ' + path.basename(file)))
+                  .catch(e => log('font ' + fam[1].trim() + ' failed: ' + (e && e.message)));
+              } catch (e) {}
+            }
+          }
+          return idx || 0;
+        },
+        deleteRule(idx) { this.cssRules.splice(idx || 0, 1); },
+      };
+      return el;
+    }
     return new FakeElement(tag);
   },
   createElementNS(ns, tag) { return this.createElement(tag); },
@@ -706,7 +818,16 @@ function overlayFrame(gameDrew, now) {
   if (MV ? !(Graphics._renderer && Graphics._renderer.gl) : !(Graphics.app && Graphics.app.renderer)) return false;   // MV: PIXI v4 Graphics._renderer (WebGLRenderer)
   if (!ov) {
     if (!gameDrew) return false;
-    ov = require('/opt/beta/overlay.js').create({ doc, getCursor });
+    const getViewport = () => {
+      const gw = (typeof Graphics !== 'undefined' && Graphics.width) || 640;
+      const gh = (typeof Graphics !== 'undefined' && Graphics.height) || 480;
+      const s = Math.min(640 / gw, 480 / gh);
+      const vw = Math.round(gw * s), vh = Math.round(gh * s);
+      const x0 = Math.max(0, Math.floor((640 - vw) / 2));
+      const y0 = Math.max(0, Math.floor((480 - vh) / 2));
+      return { x0, y0, w: Math.min(640 - x0 * 2, vw), h: Math.min(480 - y0 * 2, vh) };
+    };
+    ov = require('/opt/beta/overlay.js').create({ doc, getCursor, getViewport });
     ovTex = PIXI.Texture.from(ov.canvas); ovSprite = new PIXI.Sprite(ovTex); ovCont = new PIXI.Container(); ovCont.addChild(ovSprite);
     // warm-up at boot (invisible): texture allocation / first render of the overlay path cost ~0.7 s when the menu is opened for the first time
     const R0 = MV ? Graphics._renderer : Graphics.app.renderer, last0 = R0._lastObjectRendered; ovSprite.alpha = 0; ovTex.baseTexture.update();

@@ -1006,4 +1006,360 @@
             return v;
         };
     }
+
+    // ---- LL_VariableWindowMV / MV2 / MV3 (MV: avoid 4x full-screen Window bitmaps on Scene_Map) ----
+    if (Utils.RPGMAKER_NAME === "MV" &&
+        String((window.process && process.env && process.env.POCKETMZ_LLVAR_FIX) || "on").toLowerCase() !== "off" &&
+        (hasPlugin("LL_VariableWindowMV") || hasPlugin("LL_VariableWindowMV2") || hasPlugin("LL_VariableWindowMV3")) &&
+        window.Window_Base && Window_Base.prototype.initialize &&
+        !Window_Base.prototype.initialize._pmzLlVarFix) {
+        const _llWbInit = Window_Base.prototype.initialize;
+        const wrappedLlWbInit = function(x, y, w, h) {
+            if (this.constructor && this.constructor.name === "Window_ExVariableWindow" &&
+                w === Graphics.boxWidth && h === Graphics.boxHeight && typeof this.fittingHeight === "function") {
+                h = this.fittingHeight(1);
+            }
+            return _llWbInit.call(this, x, y, w, h);
+        };
+        wrappedLlWbInit._pmzLlVarFix = true;
+        Window_Base.prototype.initialize = wrappedLlWbInit;
+    }
+
+    // ---- TMNamePop (MV: per-map Bitmap cache + off-screen skip for Sprite_NamePop) ----
+    if (Utils.RPGMAKER_NAME === "MV" &&
+        String((window.process && process.env && process.env.POCKETMZ_NAMEPOP_FIX) || "on").toLowerCase() !== "off" &&
+        hasPlugin("TMNamePop") && window.Sprite_Character &&
+        Sprite_Character.prototype.updateNamePop && !Sprite_Character.prototype.updateNamePop._pmzNpFix) {
+        const npCache = new Map();
+        let npMapId = -1;
+        const releaseNpBmp = b => {
+            try {
+                if (b.__baseTexture) { b.__baseTexture.destroy(); b.__baseTexture = null; }
+                if (b.__canvas) { b.__canvas.width = 0; b.__canvas.height = 0; b.__canvas = null; b.__context = null; }
+            } catch (e) {}
+        };
+        const clearNpCache = () => {
+            for (const b of npCache.values()) releaseNpBmp(b);
+            npCache.clear();
+        };
+        if (window.Scene_Title && Scene_Title.prototype.create) {
+            const _npTitle = Scene_Title.prototype.create;
+            Scene_Title.prototype.create = function() { clearNpCache(); return _npTitle.apply(this, arguments); };
+        }
+        const patchNpProto = proto => {
+            if (!proto || !proto.refresh || proto.refresh._pmzCached) return;
+            const _origNpRefresh = proto.refresh;
+            const wrappedNpRefresh = function(text, outlineColor) {
+                const curMap = window.$gameMap && $gameMap.mapId ? ($gameMap.mapId() || 0) : 0;
+                if (curMap !== npMapId) { clearNpCache(); npMapId = curMap; }
+                const key = String(text) + "\0" + String(outlineColor || "");
+                const hit = npCache.get(key);
+                if (hit) { this.bitmap = hit; return; }
+                const w = (window.TMPlugin && TMPlugin.NamePop && TMPlugin.NamePop.Width) || 160;
+                const fs = (window.TMPlugin && TMPlugin.NamePop && TMPlugin.NamePop.FontSize) || 20;
+                const ow = (window.TMPlugin && TMPlugin.NamePop && TMPlugin.NamePop.OutlineWidth) || 4;
+                let bmp = this.bitmap;
+                if (!bmp || bmp._pmzCachedBmp || bmp.width !== w || bmp.height !== fs + 4) {
+                    bmp = new Bitmap(w, fs + 4);
+                    bmp.fontSize = fs;
+                    bmp.outlineWidth = ow;
+                    this.bitmap = bmp;
+                }
+                _origNpRefresh.call(this, text, outlineColor);
+                bmp._pmzCachedBmp = true;
+                if (npCache.size >= 80) {
+                    const oldestKey = npCache.keys().next().value;
+                    const oldest = npCache.get(oldestKey);
+                    npCache.delete(oldestKey);
+                    if (oldest) releaseNpBmp(oldest);
+                }
+                npCache.set(key, bmp);
+            };
+            wrappedNpRefresh._pmzCached = true;
+            proto.refresh = wrappedNpRefresh;
+        };
+        const _origUpdateNp = Sprite_Character.prototype.updateNamePop;
+        const wrappedUpdateNp = function() {
+            if (this._gkdOff) return;
+            const r = _origUpdateNp.apply(this, arguments);
+            if (this._namePopSprite) patchNpProto(Object.getPrototypeOf(this._namePopSprite));
+            return r;
+        };
+        wrappedUpdateNp._pmzNpFix = true;
+        Sprite_Character.prototype.updateNamePop = wrappedUpdateNp;
+    }
+
+    // ---- 111_InputForm (MV on β: bridge HTML <input> form to native gamepad Scene_Name) ----
+    if (Utils.RPGMAKER_NAME === "MV" &&
+        String((window.process && process.env && process.env.POCKETMZ_INPUTFORM_FIX) || "on").toLowerCase() !== "off" &&
+        hasPlugin("111_InputForm") &&
+        typeof document !== "undefined" && !("selectionStart" in document.createElement("input")) &&
+        window.Game_Interpreter && Game_Interpreter.prototype.pluginCommand &&
+        window.Scene_Name && !Game_Interpreter.prototype.pluginCommand._pmzIfBridge) {
+        const ifParam = PluginManager.parameters("111_InputForm") || {};
+        const okSw = Number(ifParam["Switch ID Selected OK"] || 0);
+        const resolveVarId = tok => {
+            const s = String(tok || "").trim();
+            const m = /^(V?)([0-9]+)$/i.exec(s);
+            if (m) return m[1] ? $gameVariables.value(+m[2]) : +m[2];
+            const vars = window.$dataSystem && $dataSystem.variables;
+            if (vars) {
+                for (let i = 1; i < vars.length; i++) if (vars[i] === s) return i;
+            }
+            return 0;
+        };
+        const parseIfArgs = raw => {
+            const out = {};
+            for (const part of String(raw || "").split(";")) {
+                const m = /^(\w+)=(\S*)$/i.exec(part.trim());
+                if (!m) continue;
+                const k = m[1].toLowerCase(), v = m[2];
+                if (k === "v" || k === "init_v") out[k] = resolveVarId(v);
+                else if (k === "init") out[k] = v;
+                else out[k] = Number(v);
+            }
+            return out;
+        };
+        let pendingIf = null;
+        const _origPluginCmd = Game_Interpreter.prototype.pluginCommand;
+        const wrappedPluginCmd = function(command, args) {
+            if (command !== "InputForm") return _origPluginCmd.apply(this, arguments);
+            const p = parseIfArgs(args && args[0]);
+            const varId = p.v || 0;
+            const actorId = p.n || 0;
+            const maxLen = Math.max(1, Number(p.max) || 8);
+            let initStr = "";
+            if (p.init !== undefined) initStr = String(p.init);
+            else if (p.init_n && $gameActors.actor(p.init_n)) initStr = $gameActors.actor(p.init_n).name();
+            else if (actorId && $gameActors.actor(actorId)) initStr = $gameActors.actor(actorId).name();
+            else if (p.init_v) {
+                const vv = $gameVariables.value(p.init_v);
+                if (typeof vv === "string") initStr = vv;
+            } else if (varId) {
+                const vv = $gameVariables.value(varId);
+                if (typeof vv === "string") initStr = vv;
+            }
+            const actor = actorId > 0 ? $gameActors.actor(actorId) : null;
+            if (actor) {
+                const origName = actor.name();
+                if (initStr !== origName && (p.init !== undefined || p.init_n || p.init_v)) actor.setName(initStr);
+                pendingIf = { actorId, varId, okSw, origName, varOnly: false, val: initStr };
+                SceneManager.push(Scene_Name);
+                SceneManager.prepareNextScene(actorId, maxLen);
+            } else {
+                pendingIf = { actorId: 0, varId, okSw, origName: initStr, varOnly: true, val: initStr };
+                SceneManager.push(Scene_Name);
+                SceneManager.prepareNextScene(0, maxLen);
+            }
+        };
+        wrappedPluginCmd._pmzIfBridge = true;
+        Game_Interpreter.prototype.pluginCommand = wrappedPluginCmd;
+
+        const _snCreate = Scene_Name.prototype.create;
+        Scene_Name.prototype.create = function() {
+            if (!pendingIf || !pendingIf.varOnly) return _snCreate.apply(this, arguments);
+            const dummyActor = {
+                actorId: () => 0, faceName: () => "", faceIndex: () => 0,
+                name: () => pendingIf.val, setName: s => { pendingIf.val = s; }
+            };
+            const _gaActor = $gameActors.actor;
+            $gameActors.actor = function(id) { return id === 0 ? dummyActor : _gaActor.apply(this, arguments); };
+            try { return _snCreate.apply(this, arguments); }
+            finally { $gameActors.actor = _gaActor; }
+        };
+
+        const _snOnOk = Scene_Name.prototype.onInputOk;
+        Scene_Name.prototype.onInputOk = function() {
+            if (!pendingIf) return _snOnOk.apply(this, arguments);
+            const cur = pendingIf;
+            pendingIf = null;
+            const name = this._editWindow ? this._editWindow.name() : cur.val;
+            if (cur.varOnly) {
+                if (cur.varId > 0) $gameVariables.setValue(cur.varId, name);
+                if (cur.okSw > 0) $gameSwitches.setValue(cur.okSw, true);
+                this.popScene();
+                return;
+            }
+            const r = _snOnOk.apply(this, arguments);
+            if (cur.varId > 0) $gameVariables.setValue(cur.varId, name);
+            if (cur.okSw > 0) $gameSwitches.setValue(cur.okSw, true);
+            return r;
+        };
+
+        const _snTerm = Scene_Name.prototype.terminate;
+        Scene_Name.prototype.terminate = function() {
+            if (pendingIf) {
+                const cur = pendingIf;
+                pendingIf = null;
+                if (!cur.varOnly && cur.actorId > 0 && $gameActors.actor(cur.actorId)) {
+                    $gameActors.actor(cur.actorId).setName(cur.origName);
+                }
+                if (cur.okSw > 0) $gameSwitches.setValue(cur.okSw, false);
+            }
+            return _snTerm.apply(this, arguments);
+        };
+
+        // Compact Scene_Name layout on short screens (e.g. 745x400) so all 9 rows + edit box fit
+        if (window.Window_NameEdit && window.Window_NameInput) {
+            const WNE = Window_NameEdit.prototype;
+            const _wneInit = WNE.initialize, _wneWh = WNE.windowHeight, _wneFw = WNE.faceWidth;
+            const _wnePad = WNE.standardPadding, _wneLh = WNE.lineHeight, _wneIr = WNE.itemRect;
+            const compact = () => !!pendingIf && Graphics.boxHeight < 560;
+            WNE.windowHeight = function() { return compact() ? 64 : _wneWh.call(this); };
+            WNE.faceWidth = function() { return compact() ? 0 : _wneFw.call(this); };
+            WNE.standardPadding = function() { return compact() ? 10 : _wnePad.call(this); };
+            WNE.lineHeight = function() { return compact() ? 28 : _wneLh.call(this); };
+            WNE.initialize = function(actor, maxLength) {
+                const r = _wneInit.apply(this, arguments);
+                if (compact()) { this.y = 8; this.refresh(); }
+                return r;
+            };
+            WNE.itemRect = function(index) {
+                const r = _wneIr.call(this, index);
+                if (compact()) r.y = Math.max(0, Math.floor((this.contentsHeight() - r.height) / 2));
+                return r;
+            };
+            const WNI = Window_NameInput.prototype;
+            const _wniInit = WNI.initialize, _wniPad = WNI.standardPadding;
+            const _wniFs = WNI.standardFontSize, _wniLh = WNI.lineHeight;
+            WNI.standardPadding = function() { return compact() ? 10 : _wniPad.call(this); };
+            WNI.standardFontSize = function() { return compact() ? 20 : _wniFs.call(this); };
+            WNI.lineHeight = function() { return compact() ? Math.max(24, Math.floor((Graphics.boxHeight - 104) / 9)) : _wniLh.call(this); };
+            WNI.initialize = function(editWindow) {
+                const r = _wniInit.apply(this, arguments);
+                if (compact() && editWindow) {
+                    this.y = editWindow.y + editWindow.height + 6;
+                    this.refresh();
+                    this.updateCursor();
+                }
+                return r;
+            };
+        }
+    }
+
+    // ---- FTKR_ExMessageWindow2 (MV: skip closed-idle Window_MessageEx updates) ----
+    if (Utils.RPGMAKER_NAME === "MV" &&
+        String((window.process && process.env && process.env.POCKETMZ_FTKR_MSG_FIX) || "on").toLowerCase() !== "off" &&
+        hasPlugin("FTKR_ExMessageWindow2") &&
+        window.Window_MessageEx && Window_MessageEx.prototype.update &&
+        !Window_MessageEx.prototype.update._pmzFtkrSkip) {
+        const _wmExUpdate = Window_MessageEx.prototype.update;
+        const wrappedWmExUpdate = function() {
+            if (this.openness === 0 && !this._opening && !this._closing &&
+                !this._textState && !this._waitCount &&
+                this._gameMessage && !this._gameMessage.isBusy()) {
+                return;
+            }
+            return _wmExUpdate.apply(this, arguments);
+        };
+        wrappedWmExUpdate._pmzFtkrSkip = true;
+        Window_MessageEx.prototype.update = wrappedWmExUpdate;
+    }
+
+    // ---- DTextPicture (MV: deterministic key + LRU Bitmap cache + Cairo canvas release) ----
+    if (Utils.RPGMAKER_NAME === "MV" &&
+        String((window.process && process.env && process.env.POCKETMZ_DTEXT_FIX) || "on").toLowerCase() !== "off" &&
+        hasPlugin("DTextPicture") &&
+        window.Game_Picture && window.Sprite_Picture &&
+        Sprite_Picture.prototype.makeDynamicBitmap &&
+        !Sprite_Picture.prototype.makeDynamicBitmap._pmzDTextFix) {
+        const dtextKey = info => "pmz_dt:" + [
+            info.value, info.size || 0, info.align || 0,
+            info.color || "", info.font || "", info.windowFrame ? 1 : 0
+        ].join("\x1f");
+        const releaseBmp = b => {
+            if (!b || b._url || !b.__canvas) return;
+            try {
+                if (b.__baseTexture) { b.__baseTexture.destroy(); b.__baseTexture = null; }
+                b.__canvas.width = 0; b.__canvas.height = 0;
+                b.__canvas = null; b.__context = null;
+            } catch (e) {}
+        };
+        const isBmpInUse = bmp => {
+            try {
+                const pc = window.SceneManager && SceneManager._scene && SceneManager._scene._spriteset &&
+                    SceneManager._scene._spriteset._pictureContainer;
+                const ch = pc && pc.children;
+                if (!ch) return false;
+                for (let i = 0; i < ch.length; i++) {
+                    if (ch[i] && ch[i].bitmap === bmp) return true;
+                }
+            } catch (e) {}
+            return false;
+        };
+
+        const _gpShow = Game_Picture.prototype.show;
+        Game_Picture.prototype.show = function() {
+            const r = _gpShow.apply(this, arguments);
+            if (this.dTextInfo) this._name = dtextKey(this.dTextInfo);
+            return r;
+        };
+        if (Game_Picture.prototype.updateDTextVariable) {
+            const _gpUpdDt = Game_Picture.prototype.updateDTextVariable;
+            Game_Picture.prototype.updateDTextVariable = function() {
+                const r = _gpUpdDt.apply(this, arguments);
+                if (this.dTextInfo) this._name = dtextKey(this.dTextInfo);
+                return r;
+            };
+        }
+
+        const MAX_CACHE = 24;
+        const cache = new Map();
+        const _makeDyn = Sprite_Picture.prototype.makeDynamicBitmap;
+        const wrappedMakeDyn = function() {
+            const old = this.bitmap;
+            if (old && old._pmzDText && !old._pmzDTextCached) releaseBmp(old);
+            const info = this.dTextInfo;
+            if (!info) return _makeDyn.apply(this, arguments);
+            const key = dtextKey(info);
+            const cached = cache.get(key);
+            if (cached && cached.__canvas && cached.__canvas.width > 0) {
+                cache.delete(key);
+                cache.set(key, cached);
+                this.bitmap = cached;
+                this._colorTone = [0, 0, 0, 0];
+                if (this._frameWindow && this.removeFrameWindow) this.removeFrameWindow();
+                if (info.windowFrame && this.makeFrameWindow && window.SceneManager && SceneManager.getHiddenWindow) {
+                    this.hiddenWindow = SceneManager.getHiddenWindow();
+                    this.hiddenWindow.resetFontSettings(info);
+                    const scaleX = this.picture() ? this.picture().scaleX() / 100 : 1;
+                    const scaleY = this.picture() ? this.picture().scaleY() / 100 : 1;
+                    this.makeFrameWindow(cached.width * scaleX, cached.height * scaleY);
+                    this.hiddenWindow = null;
+                }
+                return;
+            }
+            if (cached) cache.delete(key);
+            const r = _makeDyn.apply(this, arguments);
+            if (this.bitmap && this.bitmap.__canvas) {
+                this.bitmap._pmzDText = true;
+                this.bitmap._pmzDTextCached = true;
+                cache.set(key, this.bitmap);
+                while (cache.size > MAX_CACHE) {
+                    const firstKey = cache.keys().next().value;
+                    const evicted = cache.get(firstKey);
+                    cache.delete(firstKey);
+                    if (evicted) {
+                        evicted._pmzDTextCached = false;
+                        if (!isBmpInUse(evicted)) releaseBmp(evicted);
+                    }
+                }
+            }
+            return r;
+        };
+        wrappedMakeDyn._pmzDTextFix = true;
+        Sprite_Picture.prototype.makeDynamicBitmap = wrappedMakeDyn;
+
+        if (window.Scene_Base && Scene_Base.prototype.terminate) {
+            const _sbTermDt = Scene_Base.prototype.terminate;
+            Scene_Base.prototype.terminate = function() {
+                const r = _sbTermDt.apply(this, arguments);
+                for (const bmp of cache.values()) {
+                    if (bmp) { bmp._pmzDTextCached = false; releaseBmp(bmp); }
+                }
+                cache.clear();
+                return r;
+            };
+        }
+    }
 })();

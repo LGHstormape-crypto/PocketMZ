@@ -25,7 +25,7 @@ import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_HOST = "gkd-rocknix"
+DEFAULT_HOST = "rocknix.local"
 ARCHIVE_EXTS = {".zip", ".7z", ".rar"}
 IGNORED_DIRS = {"不满足", "_converted", "_x"}
 RUNTIME_EXTS = {".exe", ".dll", ".pak", ".dat", ".bin"}
@@ -33,7 +33,7 @@ RUNTIME_FILES = {"debug.log"}
 RUNTIME_DIRS = {"locales", "swiftshader"}
 MB = 1024 * 1024
 REMOTE_ROOT = "/storage/roms/rpgmaker"
-REMOTE_SCAN = "if [ -x /storage/pocketmz/pocketmz-scan.sh ]; then /storage/pocketmz/pocketmz-scan.sh; elif [ -f /storage/pocketmz/pocketmz-library.py ]; then python3 /storage/pocketmz/pocketmz-library.py; fi"
+REMOTE_SCAN = "/storage/pocketmz/pocketmz-scan.sh"
 DLSITE_RE = re.compile(r"(?<![A-Za-z0-9])[RVB]J\d{6,8}(?!\d)")
 
 
@@ -192,6 +192,24 @@ def walk_entries(root, maxdepth=None):
 
 # ---------------------------------------------------------------- detection
 
+def find_evb_exe(files, pre, min_size):
+    """Return the most likely EVB-packed .exe Entry directly under prefix `pre`."""
+    g = files.get(pre + "game.exe")
+    if g and g.size >= min_size:
+        return g
+    skip_pre = ("unins", "vcredist", "dxsetup", "setup", "install")
+    cands = []
+    plen = len(pre)
+    for k, e in files.items():
+        if not k.startswith(pre) or not k.endswith(".exe"):
+            continue
+        rel = k[plen:]
+        if "/" in rel or rel.startswith(skip_pre) or e.size < min_size:
+            continue
+        cands.append(e)
+    return max(cands, key=lambda e: e.size) if cands else None
+
+
 def detect_game(files):
     """files: dict lower-case norm path -> Entry. Returns (kind, prefix) or None."""
     def has(p):
@@ -206,7 +224,11 @@ def detect_game(files):
         if low.endswith(suf):
             pre = low[: -len(suf)]
             if (pre == "" or pre.endswith("/")) and has(pre + "index.html"):
-                cand = (pre.count("/"), "mz", orig_prefix(low, suf))
+                if (not has(pre + "data/system.json") and has(pre + "nw.dll")
+                        and has(pre + "package.json") and find_evb_exe(files, pre, 5 * MB)):
+                    cand = (pre.count("/"), "packed", orig_prefix(low, suf))
+                else:
+                    cand = (pre.count("/"), "mz", orig_prefix(low, suf))
                 best = min(best, cand) if best else cand
     if best:
         return best[1], best[2]
@@ -217,17 +239,29 @@ def detect_game(files):
             if wpre == "www/" or wpre.endswith("/www/"):
                 parent = wpre[:-4]
                 if has(wpre + "index.html") and has(parent + "package.json"):
-                    cand = (parent.count("/"), "mv", orig_prefix(low, suf)[:-4])
+                    if (not has(wpre + "data/system.json") and has(parent + "nw.dll")
+                            and find_evb_exe(files, parent, 5 * MB)):
+                        cand = (parent.count("/"), "packed", orig_prefix(low, suf)[:-4])
+                    else:
+                        cand = (parent.count("/"), "mv", orig_prefix(low, suf)[:-4])
                     best = min(best, cand) if best else cand
     if best:
         return best[1], best[2]
     for low in files:
         if low == "nw.dll" or low.endswith("/nw.dll"):
             pre = low[:-6]
-            exe = files.get(pre + "game.exe")
-            if (has(pre + "index.html") and has(pre + "package.json") and exe
-                    and exe.size > 20 * MB
-                    and not any(k.startswith(pre + "js/") for k in files)):
+            if not (has(pre + "package.json") or has(pre + "www/package.json")):
+                continue
+            has_core = (has(pre + "js/rmmz_core.js")
+                        or has(pre + "www/js/rpg_core.js")
+                        or has(pre + "js/rpg_core.js"))
+            if has_core and find_evb_exe(files, pre, 5 * MB):
+                cand = (pre.count("/"), "packed", files[low].norm[:-6])
+                best = min(best, cand) if best else cand
+            elif (not has_core and find_evb_exe(files, pre, 15 * MB)
+                  and (has(pre + "index.html") or has(pre + "www/package.json")
+                       or any(k.startswith(pre + "www/") for k in files)
+                       or has(pre + "game.exe"))):
                 cand = (pre.count("/"), "packed", files[low].norm[:-6])
                 best = min(best, cand) if best else cand
     if best:
@@ -343,6 +377,8 @@ def count_plugins(data):
 def read_info(read_path, kind, prefix):
     """read_path(rel_norm) -> bytes|None. Returns (title, locale, resolution, plugins)."""
     base = prefix + ("www/" if kind == "mv" else "")
+    if kind == "mv" and read_path(base + "data/System.json") is None and read_path(base + "js/plugins.js") is None:
+        base = prefix
     title, locale, res = "", "", "816x624"
     raw = read_path(base + "data/System.json")
     if raw:
@@ -394,7 +430,14 @@ EVB_HELP = ("需要先安装 evbunpack："
 
 
 def unpack_evb(final, work):
-    exe = next((p for p in final.iterdir() if p.is_file() and p.name.lower() == "game.exe"), None)
+    exes = [p for p in final.iterdir() if p.is_file() and p.suffix.lower() == ".exe"]
+    skip_pre = ("unins", "vcredist", "dxsetup", "setup", "install")
+    exe = next((p for p in exes if p.name.lower() == "game.exe" and p.stat().st_size >= 5 * MB), None)
+    if not exe:
+        cands = [p for p in exes if not p.name.lower().startswith(skip_pre) and p.stat().st_size >= 5 * MB]
+        exe = max(cands, key=lambda p: p.stat().st_size) if cands else None
+    if not exe:
+        exe = next((p for p in exes if p.name.lower() == "game.exe"), None)
     if not exe:
         raise ToolError("找不到 Game.exe")
     tmp = work.new("evb")
@@ -417,6 +460,10 @@ def unpack_evb(final, work):
     if not any((final / p).is_file() for p in ("js/rmmz_core.js", "js/rpg_core.js",
                                                 "www/js/rpg_core.js")):
         raise ToolError("解包后仍找不到 rmmz_core.js / rpg_core.js")
+    if not any((final / p).is_file() for p in ("index.html", "www/index.html")):
+        raise ToolError("解包后仍找不到 index.html")
+    if not any((final / p).is_file() for p in ("data/System.json", "www/data/System.json")):
+        raise ToolError("解包后仍找不到 data/System.json")
 
 
 def strip_runtime(final):

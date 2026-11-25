@@ -255,6 +255,55 @@ if [ "$RT" != nw ]; then
   BVER=$("$RZ/beta/beta-version.sh" 2>/dev/null)
   if [ ! -x "$RZ/beta/run-pmzrun.sh" ] || [ -z "$BVER" ]; then echo "runtime $RT: β not installed, using NW.js"; RT=nw; fi
 fi
+SET_LANG=$(gset language)
+case "$SET_LANG" in
+  zh|en|ja) export POCKETMZ_UI_LANG="$SET_LANG" ;;
+  *) UI_LANG=$(get_setting system.language 2>/dev/null); export POCKETMZ_UI_LANG="${POCKETMZ_UI_LANG:-${UI_LANG:-${LANG:-zh_CN}}}" ;;
+esac
+
+PROBE_PID=""
+probe_start() {
+  [ -z "$MENU" ] && [ -f "$PMZ/pocketmz-probe.py" ] || return 0
+  if [ "$(gset testMode)" = "true" ] || [ -f "$RZ/probe.enabled" ] || [ "${POCKETMZ_TEST_MODE:-0}" = "1" ]; then
+    mkdir -p "$RZ/telemetry"
+    rm -f /tmp/pmz-engine-probe.jsonl
+    export PMZ_PROBE_FILE=/tmp/pmz-engine-probe.jsonl
+    python3 "$PMZ/pocketmz-probe.py" --record \
+      --out "$RZ/telemetry/$(date +%Y%m%d-%H%M%S)_${ID}_${1}.jsonl" \
+      --game "$ID" --title "$(basename "${L:-$SRC}" .rpgmz)" --rt "$1" \
+      --engine-log /tmp/pmz-engine-probe.jsonl --interval 5 --watch-pid $$ \
+      > "$RZ/games/$ID/probe.log" 2>&1 &
+    PROBE_PID=$!
+    echo "telemetry probe started (pid=$PROBE_PID)"
+  fi
+}
+probe_stop() {
+  if [ -n "$PROBE_PID" ]; then
+    kill -TERM "$PROBE_PID" 2>/dev/null
+    wait "$PROBE_PID" 2>/dev/null
+    PROBE_PID=""
+  fi
+  rm -f /tmp/pmz-engine-probe.jsonl
+  unset PMZ_PROBE_FILE
+}
+
+ORIG_SWAPPINESS=""
+swap_tune_on() {
+  if [ -z "$MENU" ] && [ -w /proc/sys/vm/swappiness ]; then
+    local cur=$(cat /proc/sys/vm/swappiness 2>/dev/null)
+    if [ -n "$cur" ] && [ "$cur" -gt 10 ] 2>/dev/null; then
+      if [ -z "$ORIG_SWAPPINESS" ]; then ORIG_SWAPPINESS="$cur"; fi
+      echo 10 > /proc/sys/vm/swappiness 2>/dev/null && echo "vm.swappiness: $cur -> 10"
+    fi
+  fi
+}
+swap_tune_off() {
+  if [ -n "$ORIG_SWAPPINESS" ] && [ -w /proc/sys/vm/swappiness ]; then
+    echo "$ORIG_SWAPPINESS" > /proc/sys/vm/swappiness 2>/dev/null
+    ORIG_SWAPPINESS=""
+  fi
+}
+trap 'probe_stop; swap_tune_off' EXIT INT TERM
 # facts for the in-game menu's runtime item (the game's root does not see /storage): global default, β installed (image or dev overlay)
 case "$(gset runtime)" in nw|beta|auto) export POCKETMZ_RT_GLOBAL="$(gset runtime)" ;; *) export POCKETMZ_RT_GLOBAL=auto ;; esac
 if [ -x "$RZ/beta/run-pmzrun.sh" ] && { [ -f "$RZ/beta-runtime.sqfs" ] || [ -d "$RZ/beta/upper24" ]; }; then export POCKETMZ_BETA_INST=1; else export POCKETMZ_BETA_INST=0; fi
@@ -286,11 +335,14 @@ if [ "$RT" != nw ]; then
   export POCKETMZ_DEFAULT_FPS="${POCKETMZ_DEFAULT_FPS:-30}"
   TZ="${TZ:-$(get_setting system.timezone 2>/dev/null)}"; export TZ="${TZ:-UTC}"
   BFAIL=/tmp/pmz-beta-fail.txt; rm -f "$BFAIL" /tmp/pmz-beta-compat.txt
+  swap_tune_on
+  probe_start beta
   ts "beta start"; BT0=$SECONDS
   POCKETMZ_TITLE="$(basename "${L:-$SRC}" .rpgmz)" MODE=play PMZ_GAME_ID="$ID" PMZ_GUARD=1 PMZ_GUARD_FORCE="$(printf %s "$POCKETMZ_BETA_FORCE_FAIL" | tr -c "A-Za-z0-9._-" _)" \
     PMZ_FAIL_FILE="$BFAIL" PMZ_COMPAT_FILE=/tmp/pmz-beta-compat.txt "$RZ/beta/run-pmzrun.sh"
   BRC=$?; BDT=$((SECONDS - BT0))
   ts "beta exit $BRC after ${BDT}s"
+  probe_stop
   BWHY=""
   if [ $BRC -eq 3 ]; then BWHY="$(head -c 300 "$BFAIL" 2>/dev/null)"; [ -z "$BWHY" ] && BWHY="exit 3"
   elif [ $BRC -ne 0 ] && [ $BDT -lt 45 ]; then
@@ -410,10 +462,8 @@ fi
 # Browser language = the game's language (MZ data/System.json "locale", e.g. ja_JP; MV: ja).
 # Affects CJK fallback glyph shapes and navigator.language; file names stay UTF-8 (C.UTF-8).
 GAME_LOCALE=$(grep -o '"locale" *: *"[^"]*"' "$POCKETMZ_GAME/${WEB}data/System.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
-UI_LANG=$(get_setting system.language 2>/dev/null)
-export POCKETMZ_UI_LANG="${UI_LANG:-zh_CN}"                  # language of the PocketMZ menus
 TZ="${TZ:-$(get_setting system.timezone 2>/dev/null)}"; export TZ="${TZ:-UTC}"   # local time in the game (and backup names)
-[ -n "$MENU" ] && GAME_LOCALE="$UI_LANG"                     # the game menu page: system language
+[ -n "$MENU" ] && GAME_LOCALE="$POCKETMZ_UI_LANG"            # the game menu page: UI language
 # in-game PocketMZ menu settings that apply at start (pocketmz.json in the thin copy, unless forced by ES)
 if [ -z "$MENU" ] && [ -z "$POCKETMZ_ES_RENDER_SCALE" ] && [ -f "$POCKETMZ_GAME/pocketmz.json" ]; then
   RS=$(grep -o '"renderScale": *"[a-z0-9.]*"' "$POCKETMZ_GAME/pocketmz.json" | head -1 | cut -d'"' -f4)
@@ -438,9 +488,13 @@ echo "args: $(echo $NW_ARGS)"
 
 # Pass-through controls for NW.js (α fallback): -hotkey guide avoids swallowing Select (Shift)
 # so Select+X (menu) and Select+Start (quit) are handled directly by PocketMZ_Menu.js.
+swap_tune_on
+probe_start nw
 ts "nw start"
 "$PMZ/pocketmz-chroot.sh" run /opt/nwjs/nw $NW_ARGS "--js-flags=--max-old-space-size=256 --expose-gc $JS_EXTRA" /game
 ts "nw exit $?"
+probe_stop
+swap_tune_off
 
 if [ -f "$CG/memory.events" ]; then
   OOM_AFTER=$(sed -n 's/^oom_kill //p' "$CG/memory.events")

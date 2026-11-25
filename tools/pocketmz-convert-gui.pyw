@@ -16,7 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLI = os.path.join(HERE, "pocketmz-convert.py")
 CONFIG_PATH = os.path.join(os.environ.get("APPDATA") or HERE, "PocketMZ", "converter.json")
-DEFAULT_HOST = "gkd-rocknix"
+DEFAULT_HOST = "rocknix.local"
 FFMPEG_MISSING = "未找到 ffmpeg（可用 winget install Gyan.FFmpeg 安装后重开本程序）"
 
 

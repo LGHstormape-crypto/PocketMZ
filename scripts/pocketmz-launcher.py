@@ -95,7 +95,7 @@ I18N = {
         "settings": "设置", "scan": "刷新游戏列表", "defaults": "游戏默认设置", "saves": "存档",
         "runtime": "运行环境", "about": "关于", "exit": "返回游戏列表",
         "hint": "A 确定  B 返回", "hint_cycle": "左右 修改  A 切换  B 返回",
-        "d_fps": "默认帧率", "d_scale": "渲染缩放", "d_smooth": "平滑游戏（双线性过滤）", "d_stopes": "运行时关闭 ES", "d_runtime": "游戏运行时（下次启动生效）", "rt_auto": "自动（默认 β）",
+        "d_fps": "默认帧率", "d_scale": "渲染缩放", "d_smooth": "平滑游戏（双线性过滤）", "d_stopes": "运行时关闭 ES", "d_runtime": "游戏运行时（下次启动生效）", "d_test": "测试模式（录制性能数据）", "d_lang": "界面语言", "lang_auto": "跟随系统", "rt_auto": "自动（默认 β）",
         "scale_auto": "自动缩小", "scale_off": "原生分辨率", "on": "开", "off": "关",
         "d_note": "只对没有单独设置的游戏生效；游戏内菜单 (Select+X) 可单独覆盖",
         "s_export": "导出全部存档", "s_clean": "清理游戏副本缓存",
@@ -132,7 +132,7 @@ I18N = {
         "settings": "設定", "scan": "リスト更新", "defaults": "ゲームの既定設定", "saves": "セーブデータ",
         "runtime": "実行環境", "about": "このアプリについて", "exit": "ゲーム一覧に戻る",
         "hint": "A 決定  B 戻る", "hint_cycle": "左右 変更  A 切替  B 戻る",
-        "d_fps": "既定フレームレート", "d_scale": "描画スケール", "d_smooth": "画面の平滑化（バイリニア）", "d_stopes": "実行中に ES を停止", "d_runtime": "ゲームの実行環境（次回起動から）", "rt_auto": "自動（β 優先）",
+        "d_fps": "既定フレームレート", "d_scale": "描画スケール", "d_smooth": "画面の平滑化（バイリニア）", "d_stopes": "実行中に ES を停止", "d_runtime": "ゲームの実行環境（次回起動から）", "d_test": "テストモード（性能記録）", "d_lang": "言語", "lang_auto": "システムに合わせる", "rt_auto": "自動（β 優先）",
         "scale_auto": "自動縮小", "scale_off": "ネイティブ解像度", "on": "オン", "off": "オフ",
         "d_note": "個別設定のないゲームに適用されます。ゲーム内 (Select+X) で個別に変更可",
         "s_export": "セーブデータをすべて書き出す", "s_clean": "ゲームのコピーキャッシュを削除",
@@ -170,7 +170,7 @@ I18N = {
         "settings": "Settings", "scan": "Refresh game list", "defaults": "Game defaults", "saves": "Saves",
         "runtime": "Runtime", "about": "About", "exit": "Back to games",
         "hint": "A OK  B Back", "hint_cycle": "Left/Right Change  A Toggle  B Back",
-        "d_fps": "Default FPS", "d_scale": "Render scale", "d_smooth": "Smooth games (bilinear)", "d_stopes": "Stop ES while playing", "d_runtime": "Game runtime (next start)", "rt_auto": "Auto (β default)",
+        "d_fps": "Default FPS", "d_scale": "Render scale", "d_smooth": "Smooth games (bilinear)", "d_stopes": "Stop ES while playing", "d_runtime": "Game runtime (next start)", "d_test": "Test mode (record telemetry)", "d_lang": "Language", "lang_auto": "Auto (System)", "rt_auto": "Auto (β default)",
         "scale_auto": "Auto downscale", "scale_off": "Native resolution", "on": "On", "off": "Off",
         "d_note": "Applies when per-game settings are unset; change per game via Select+X",
         "s_export": "Export all saves", "s_clean": "Clean game copy cache",
@@ -190,8 +190,10 @@ I18N = {
 }
 
 
-def pick_lang():
-    v = os.environ.get("POCKETMZ_UI_LANG", "").strip().lower()
+def pick_lang(cfg=None):
+    if isinstance(cfg, dict) and cfg.get("language") in ("zh", "en", "ja"):
+        return cfg["language"]
+    v = (os.environ.get("POCKETMZ_UI_LANG") or os.environ.get("LANG") or "").strip().lower()
     if v.startswith("ja"):
         return "ja"
     if v.startswith("zh") or not v:
@@ -199,11 +201,10 @@ def pick_lang():
     return "en"
 
 
-T = I18N[pick_lang()]
 INFO_KEYS = ("version", "games", "withSaves", "dataSize", "free")
 
 # ---------- settings.json & maint helpers (unified with pocketmz-maint.sh) ----------
-DEFAULTS = {"defaultFps": 30, "renderScale": "auto", "smooth": False, "stopES": False, "runtime": "auto"}
+DEFAULTS = {"defaultFps": 30, "renderScale": "auto", "smooth": False, "stopES": False, "runtime": "auto", "testMode": False, "language": "auto"}
 
 
 def has_nw():
@@ -234,7 +235,14 @@ def load_settings():
         s["stopES"] = d["stopES"]
     if d.get("runtime") in ("nw", "beta", "auto"):
         s["runtime"] = d["runtime"]
+    if isinstance(d.get("testMode"), bool):
+        s["testMode"] = d["testMode"]
+    if d.get("language") in ("auto", "zh", "en", "ja"):
+        s["language"] = d["language"]
     return s
+
+
+T = I18N[pick_lang(load_settings())]
 
 
 def save_settings(s):
@@ -324,15 +332,16 @@ def selftest():
         RZ = tempfile.mkdtemp(prefix="pmz-selftest-")
     assert load_settings() == DEFAULTS, "defaults when file is missing"
     s = load_settings()
-    s["defaultFps"], s["renderScale"], s["smooth"], s["stopES"] = 60, "off", True, True
+    s["defaultFps"], s["renderScale"], s["smooth"], s["stopES"], s["testMode"], s["language"] = 60, "off", True, True, True, "ja"
     assert save_settings(s)
-    assert load_settings() == {"defaultFps": 60, "renderScale": "off", "smooth": True, "stopES": True, "runtime": "auto"}
+    assert load_settings() == {"defaultFps": 60, "renderScale": "off", "smooth": True, "stopES": True, "runtime": "auto", "testMode": True, "language": "ja"}
+    assert pick_lang({"language": "ja"}) == "ja" and pick_lang({"language": "en"}) == "en" and pick_lang({"language": "zh"}) == "zh"
     assert not os.path.exists(settings_path() + ".tmp")
     with open(settings_path(), "w") as f:
         f.write("{not json")
     assert load_settings() == DEFAULTS, "bad file tolerated"
     with open(settings_path(), "w") as f:
-        f.write('{"defaultFps": 45, "renderScale": 3, "stopES": "yes"}')
+        f.write('{"defaultFps": 45, "renderScale": 3, "stopES": "yes", "language": "fr"}')
     assert load_settings() == DEFAULTS, "bad values fall back"
     ok, msg, body = parse_maint_output(
         "version=1.2.0\ngames=14\nwithSaves=5\ndataSize=1.4G\nfree=22G\nOK info\n", 0)
@@ -446,8 +455,10 @@ TEXT_CACHE_MAX = 400
 
 class Menu:
     def __init__(self):
+        global T
         # ---- data ----
         self.cfg = load_settings()
+        T = I18N[pick_lang(self.cfg)]
         self.games = []
         self.load_error = None
         self.scanning = False
@@ -1302,12 +1313,14 @@ class Menu:
     def main_settings_page(self):
         return self.page(T["settings"], [
             {"label": T["scan"], "fn": self.do_scan},
+            {"label": T["d_lang"], "cycle": "language", "opts": ["auto", "zh", "en", "ja"],
+             "show": lambda v: {"auto": T["lang_auto"], "zh": "简体中文", "en": "English", "ja": "日本語"}.get(v, T["lang_auto"])},
             {"label": T["defaults"], "sub": True, "fn": lambda: self.push_page(self.defaults_page())},
             {"label": T["saves"], "sub": True, "fn": lambda: self.push_page(self.saves_page())},
             {"label": T["runtime"], "sub": True, "fn": lambda: self.push_page(self.runtime_page())},
             {"label": T["about"], "fn": self.show_about},
             {"label": T["exit"], "fn": self.close_settings},
-        ])
+        ], hint=T["hint_cycle"])
 
     def defaults_page(self):
         return self.page(T["defaults"], [
@@ -1322,6 +1335,8 @@ class Menu:
             {"label": T["d_runtime"], "cycle": "runtime",
              "opts": ["nw", "beta", "auto"] if has_nw() else ["beta"],
              "show": lambda v: {"nw": "NW.js", "beta": "β" if has_nw() else "β (β-only)", "auto": T["rt_auto"]}.get(v, "β (β-only)")},
+            {"label": T["d_test"], "cycle": "testMode", "opts": [False, True],
+             "show": lambda v: T["on"] if v else T["off"]},
         ], note=T["d_note"], hint=T["hint_cycle"])
 
     def saves_page(self):
@@ -1448,6 +1463,17 @@ class Menu:
         self.message_modal("PocketMZ\n%s\nMIT License\nRPG Maker MV/MZ runner for handhelds\n%s"
                            % (T["ver_line"].format(read_version()), PROJECT_URL))
 
+    def apply_language(self):
+        global T
+        T = I18N[pick_lang(self.cfg)]
+        if self.games:
+            self.tabs = self.build_tabs()
+        if self.stack:
+            idx, top = self.stack[0]["idx"], self.stack[0]["top"]
+            self.stack[0] = self.main_settings_page()
+            self.stack[0]["idx"] = idx
+            self.stack[0]["top"] = top
+
     def cycle_setting(self, item, d):
         opts = item["opts"]
         key = item["cycle"]
@@ -1455,6 +1481,8 @@ class Menu:
         i = opts.index(cur) if cur in opts else 0
         self.cfg[key] = opts[(i + d) % len(opts)]
         save_settings(self.cfg)
+        if key == "language":
+            self.apply_language()
         self.dirty = True
 
     def prompt_delete_game(self):

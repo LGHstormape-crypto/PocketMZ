@@ -91,14 +91,14 @@ const P_FLOAT1 = new Set([GL.LINE_WIDTH, GL.DEPTH_CLEAR_VALUE, GL.POLYGON_OFFSET
 const P_BOOL = new Set([GL.BLEND, GL.CULL_FACE, GL.DEPTH_TEST, GL.DEPTH_WRITEMASK, GL.DITHER, GL.POLYGON_OFFSET_FILL,
   GL.SAMPLE_ALPHA_TO_COVERAGE, GL.SAMPLE_COVERAGE, GL.SAMPLE_COVERAGE_INVERT, GL.SCISSOR_TEST, GL.STENCIL_TEST]);
 
-class WebGLObject { constructor(id) { this._id = id; this._deleted = false; } }
+class WebGLObject { constructor(id) { this._id = id; this._deleted = false; this._gc = null; } }
 class WebGLBuffer extends WebGLObject {}
 class WebGLTexture extends WebGLObject {}
-class WebGLProgram extends WebGLObject {}
+class WebGLProgram extends WebGLObject { constructor(id) { super(id); this._shaders = new Set(); } }
 class WebGLShader extends WebGLObject { constructor(id, type) { super(id); this._type = type; this._src = ''; } }
-class WebGLFramebuffer extends WebGLObject {}
+class WebGLFramebuffer extends WebGLObject { constructor(id) { super(id); this._att = Object.create(null); } }
 class WebGLRenderbuffer extends WebGLObject {}
-class WebGLVertexArrayObjectOES extends WebGLObject {}
+class WebGLVertexArrayObjectOES extends WebGLObject { constructor(id) { super(id); this._eb = null; this._attribs = []; } }
 class WebGLUniformLocation { constructor(id) { this._id = id; } }
 class WebGLShaderPrecisionFormat { constructor(a) { this.rangeMin = a[0]; this.rangeMax = a[1]; this.precision = a[2]; } }
 
@@ -127,7 +127,21 @@ class WebGLRenderingContext {
     this._vp = [0, 0, canvas.width, canvas.height];     // viewport/scissor as the game sees them (canvas coordinates)
     this._sc = [0, 0, canvas.width, canvas.height];
     this._exts = null; this._extObjs = {}; this.stubs = new Set();
-    this._reg = { buf: new Map(), tex: new Map(), prog: new Map(), vao: new Map(), rb: new Map() };   // GL name -> wrapper, for getParameter(*_BINDING) (Effekseer saves/restores PIXI's bindings)
+    this._reg = { buf: new Map(), tex: new Map(), prog: new Map(), vao: new Map(), rb: new Map() };   // GL name -> WeakRef(wrapper), for getParameter(*_BINDING)
+    this._activeUnit = 0;
+    this._defVao = { _eb: null, _attribs: [] };
+    this._bound = { ab: null, tex2d: new Array(32).fill(null), texCube: new Array(32).fill(null), rb: null, prog: null, vao: null };
+    this._gcStats = { buf: 0, tex: 0, fb: 0, rb: 0, prog: 0, shader: 0, vao: 0 };
+    this._fr = typeof FinalizationRegistry === 'function' ? new FinalizationRegistry(tok => {
+      if (tok.deleted) return;
+      tok.deleted = true;
+      if (tok.reg && this._reg[tok.reg]) {
+        const wr = this._reg[tok.reg].get(tok.id);
+        if (!wr || !wr.deref()) this._reg[tok.reg].delete(tok.id);
+      }
+      try { this._pmz[tok.fn](tok.id); } catch (e) {}
+      this._gcStats[tok.stat]++;
+    }) : null;
     const p = this._pmz;
     this._glExt = ' ' + p.getString(0x1F03).replace(/GL_/g, '') + ' ';
     this._vendor = p.getString(GL.VENDOR); this._renderer = p.getString(GL.RENDERER); this._version = p.getString(GL.VERSION);
@@ -163,6 +177,35 @@ class WebGLRenderingContext {
   get drawingBufferWidth() { return this.canvas.width; }
   get drawingBufferHeight() { return this.canvas.height; }
   _stub(name) { if (!this.stubs.has(name)) { this.stubs.add(name); this._warn('webgl stub: ' + name); } }
+  _track(o, reg, fn, stat) {
+    if (reg) this._reg[reg].set(o._id, new WeakRef(o));
+    if (this._fr) {
+      const tok = { id: o._id, reg, fn, stat, deleted: false };
+      o._gc = tok;
+      this._fr.register(o, tok, o);
+    }
+    return o;
+  }
+  _untrack(o, reg) {
+    o._deleted = true;
+    if (o._gc) { o._gc.deleted = true; o._gc = null; }
+    if (this._fr) { try { this._fr.unregister(o); } catch (e) {} }
+    if (reg) {
+      const wr = this._reg[reg].get(o._id);
+      if (wr) {
+        const cur = wr.deref();
+        if (!cur || cur === o) this._reg[reg].delete(o._id);
+      }
+    }
+  }
+  _regGet(reg, glId) {
+    if (!glId) return null;
+    const wr = this._reg[reg].get(glId);
+    if (!wr) return null;
+    const o = wr.deref();
+    if (!o) { this._reg[reg].delete(glId); return null; }
+    return o;
+  }
 
   // ---- default framebuffer -> window mapping (letterbox, aspect kept) ----
   _map(x, y, w, h) {
@@ -182,7 +225,11 @@ class WebGLRenderingContext {
   }
 
   // ---- simple state (straight through) ----
-  activeTexture(t) { this._pmz.activeTexture(t); }
+  activeTexture(t) {
+    const u = (t | 0) - GL.TEXTURE0;
+    if (u >= 0 && u < 32) this._activeUnit = u;
+    this._pmz.activeTexture(t);
+  }
   blendColor(r, g, b, a) { this._pmz.blendColor(r, g, b, a); }
   blendEquation(m) { this._pmz.blendEquation(m); }
   blendEquationSeparate(a, b) { this._pmz.blendEquationSeparate(a, b); }
@@ -241,11 +288,11 @@ class WebGLRenderingContext {
       case GL.UNPACK_PREMULTIPLY_ALPHA_WEBGL: return this._premul;
       case GL.UNPACK_COLORSPACE_CONVERSION_WEBGL: return GL.BROWSER_DEFAULT_WEBGL;
       case GL.FRAMEBUFFER_BINDING: return this._fb;
-      case GL.ARRAY_BUFFER_BINDING: case GL.ELEMENT_ARRAY_BUFFER_BINDING: return this._reg.buf.get(pm.getIntegerv(p, 1)[0]) || null;
-      case GL.TEXTURE_BINDING_2D: return this._reg.tex.get(pm.getIntegerv(p, 1)[0]) || null;
-      case GL.CURRENT_PROGRAM: return this._reg.prog.get(pm.getIntegerv(p, 1)[0]) || null;
-      case GL.RENDERBUFFER_BINDING: return this._reg.rb.get(pm.getIntegerv(p, 1)[0]) || null;
-      case 0x85B5: return this._hasVao ? (this._reg.vao.get(pm.getIntegerv(p, 1)[0]) || null) : null;   // VERTEX_ARRAY_BINDING(_OES)
+      case GL.ARRAY_BUFFER_BINDING: case GL.ELEMENT_ARRAY_BUFFER_BINDING: return this._regGet('buf', pm.getIntegerv(p, 1)[0]);
+      case GL.TEXTURE_BINDING_2D: return this._regGet('tex', pm.getIntegerv(p, 1)[0]);
+      case GL.CURRENT_PROGRAM: return this._regGet('prog', pm.getIntegerv(p, 1)[0]);
+      case GL.RENDERBUFFER_BINDING: return this._regGet('rb', pm.getIntegerv(p, 1)[0]);
+      case 0x85B5: return this._hasVao ? this._regGet('vao', pm.getIntegerv(p, 1)[0]) : null;   // VERTEX_ARRAY_BINDING(_OES)
       default: this._stub('getParameter(' + (typeof p === 'number' ? '0x' + p.toString(16) : String(p)) + ')'); return null;
     }
   }
@@ -272,10 +319,17 @@ class WebGLRenderingContext {
         case 'EXT_texture_filter_anisotropic': o = { TEXTURE_MAX_ANISOTROPY_EXT: 0x84FE, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 0x84FF }; break;
         case 'OES_vertex_array_object': // GLES3 VAOs
           o = { VERTEX_ARRAY_BINDING_OES: 0x85B5,
-            createVertexArrayOES: () => { const o = new WebGLVertexArrayObjectOES(pm.createVertexArray()); this._reg.vao.set(o._id, o); return o; },
-            deleteVertexArrayOES: v => { if (v && !v._deleted) { v._deleted = true; this._reg.vao.delete(v._id); pm.deleteVertexArray(v._id); } },
+            createVertexArrayOES: () => this._track(new WebGLVertexArrayObjectOES(pm.createVertexArray()), 'vao', 'deleteVertexArray', 'vao'),
+            deleteVertexArrayOES: v => {
+              if (v && !v._deleted) {
+                this._untrack(v, 'vao');
+                v._eb = null; v._attribs.length = 0;
+                if (this._bound.vao === v) this._bound.vao = null;
+                pm.deleteVertexArray(v._id);
+              }
+            },
             isVertexArrayOES: v => !!v && !v._deleted && pm.isVertexArray(v._id),
-            bindVertexArrayOES: v => pm.bindVertexArray(id(v)) };
+            bindVertexArrayOES: v => { this._bound.vao = (v && !v._deleted) ? v : null; pm.bindVertexArray(id(v)); } };
           break;
         case 'ANGLE_instanced_arrays':
           o = { VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE: 0x88FE,
@@ -289,19 +343,46 @@ class WebGLRenderingContext {
   }
 
   // ---- buffers ----
-  createBuffer() { const o = new WebGLBuffer(this._pmz.createBuffer()); this._reg.buf.set(o._id, o); return o; }
-  deleteBuffer(b) { if (b && !b._deleted) { b._deleted = true; this._reg.buf.delete(b._id); this._pmz.deleteBuffer(b._id); } }
+  createBuffer() { return this._track(new WebGLBuffer(this._pmz.createBuffer()), 'buf', 'deleteBuffer', 'buf'); }
+  deleteBuffer(b) {
+    if (b && !b._deleted) {
+      this._untrack(b, 'buf');
+      if (this._bound.ab === b) this._bound.ab = null;
+      const vao = this._bound.vao || this._defVao;
+      if (vao._eb === b) vao._eb = null;
+      this._pmz.deleteBuffer(b._id);
+    }
+  }
   isBuffer(b) { return !!b && !b._deleted; }
-  bindBuffer(t, b) { this._pmz.bindBuffer(t, id(b)); }
+  bindBuffer(t, b) {
+    const v = (b && !b._deleted) ? b : null;
+    if (t === GL.ARRAY_BUFFER) this._bound.ab = v;
+    else if (t === GL.ELEMENT_ARRAY_BUFFER) (this._bound.vao || this._defVao)._eb = v;
+    this._pmz.bindBuffer(t, id(b));
+  }
   bufferData(t, d, u) { this._pmz.bufferData(t, d === null || d === undefined ? 0 : d, u); }
   bufferSubData(t, off, d) { this._pmz.bufferSubData(t, off, d); }
   getBufferParameter(t, p) { return this._pmz.getBufferParameter(t, p); }
 
   // ---- textures ----
-  createTexture() { const o = new WebGLTexture(this._pmz.createTexture()); this._reg.tex.set(o._id, o); return o; }
-  deleteTexture(t) { if (t && !t._deleted) { t._deleted = true; this._reg.tex.delete(t._id); this._pmz.deleteTexture(t._id); } }
+  createTexture() { return this._track(new WebGLTexture(this._pmz.createTexture()), 'tex', 'deleteTexture', 'tex'); }
+  deleteTexture(t) {
+    if (t && !t._deleted) {
+      this._untrack(t, 'tex');
+      for (let i = 0; i < 32; i++) {
+        if (this._bound.tex2d[i] === t) this._bound.tex2d[i] = null;
+        if (this._bound.texCube[i] === t) this._bound.texCube[i] = null;
+      }
+      this._pmz.deleteTexture(t._id);
+    }
+  }
   isTexture(t) { return !!t && !t._deleted; }
-  bindTexture(t, tex) { this._pmz.bindTexture(t, id(tex)); }
+  bindTexture(t, tex) {
+    const v = (tex && !tex._deleted) ? tex : null;
+    if (t === GL.TEXTURE_2D) this._bound.tex2d[this._activeUnit] = v;
+    else if (t === GL.TEXTURE_CUBE_MAP) this._bound.texCube[this._activeUnit] = v;
+    this._pmz.bindTexture(t, id(tex));
+  }
   texParameteri(t, p, v) { this._pmz.texParameteri(t, p, v); }
   texParameterf(t, p, v) { this._pmz.texParameterf(t, p, v); }
   getTexParameter(t, p) { return this._pmz.getTexParameter(t, p); }
@@ -375,11 +456,26 @@ class WebGLRenderingContext {
   readPixels(x, y, w, h, fmt, type, buf) { this._pmz.readPixels(x, y, w, h, fmt, type, buf); }   // window pixels when the default framebuffer is bound (physical coordinates)
 
   // ---- framebuffers / renderbuffers ----
-  createFramebuffer() { return new WebGLFramebuffer(this._pmz.createFramebuffer()); }
-  deleteFramebuffer(f) { if (f && !f._deleted) { f._deleted = true; this._pmz.deleteFramebuffer(f._id); } }
+  createFramebuffer() { return this._track(new WebGLFramebuffer(this._pmz.createFramebuffer()), null, 'deleteFramebuffer', 'fb'); }
+  deleteFramebuffer(f) {
+    if (f && !f._deleted) {
+      this._untrack(f, null);
+      f._att = null;
+      if (this._fb === f) {
+        this._fb = null;
+        this._applyViewport();
+        this._applyScissor();
+      }
+      this._pmz.deleteFramebuffer(f._id);
+    }
+  }
   isFramebuffer(f) { return !!f && !f._deleted; }
-  framebufferTexture2D(t, a, tt, tex, l) { this._pmz.framebufferTexture2D(t, a, tt, id(tex), l); }
+  framebufferTexture2D(t, a, tt, tex, l) {
+    if (this._fb && this._fb._att) this._fb._att[a] = (tex && !tex._deleted) ? tex : null;
+    this._pmz.framebufferTexture2D(t, a, tt, id(tex), l);
+  }
   framebufferRenderbuffer(t, a, rt, rb) {
+    if (this._fb && this._fb._att) this._fb._att[a] = (rb && !rb._deleted) ? rb : null;
     const rid = id(rb);
     if (a === GL.DEPTH_STENCIL_ATTACHMENT && !this._es3) {
       // GLES 2.0 does not accept GL_DEPTH_STENCIL_ATTACHMENT: attach DEPTH + STENCIL separately (or STENCIL only without OES_packed_depth_stencil).
@@ -394,10 +490,19 @@ class WebGLRenderingContext {
     const att = (a === GL.DEPTH_STENCIL_ATTACHMENT && !this._es3) ? GL.STENCIL_ATTACHMENT : a;
     return this._pmz.getFramebufferAttachmentParameter(t, att, p);
   }
-  createRenderbuffer() { const o = new WebGLRenderbuffer(this._pmz.createRenderbuffer()); this._reg.rb.set(o._id, o); return o; }
-  deleteRenderbuffer(r) { if (r && !r._deleted) { r._deleted = true; this._reg.rb.delete(r._id); this._pmz.deleteRenderbuffer(r._id); } }
+  createRenderbuffer() { return this._track(new WebGLRenderbuffer(this._pmz.createRenderbuffer()), 'rb', 'deleteRenderbuffer', 'rb'); }
+  deleteRenderbuffer(r) {
+    if (r && !r._deleted) {
+      this._untrack(r, 'rb');
+      if (this._bound.rb === r) this._bound.rb = null;
+      this._pmz.deleteRenderbuffer(r._id);
+    }
+  }
   isRenderbuffer(r) { return !!r && !r._deleted; }
-  bindRenderbuffer(t, r) { this._pmz.bindRenderbuffer(t, id(r)); }
+  bindRenderbuffer(t, r) {
+    this._bound.rb = (r && !r._deleted) ? r : null;
+    this._pmz.bindRenderbuffer(t, id(r));
+  }
   renderbufferStorage(t, f, w, h) {
     const fmt = f === GL.DEPTH_STENCIL ? (this._packedDS ? 0x88F0 : GL.STENCIL_INDEX8) : f;   // DEPTH24_STENCIL8 when supported, else STENCIL_INDEX8
     this._pmz.renderbufferStorage(t, fmt, w, h);
@@ -405,8 +510,8 @@ class WebGLRenderingContext {
   getRenderbufferParameter(t, p) { return this._pmz.getRenderbufferParameter(t, p); }
 
   // ---- shaders / programs ----
-  createShader(t) { return new WebGLShader(this._pmz.createShader(t), t); }
-  deleteShader(s) { if (s && !s._deleted) { s._deleted = true; this._pmz.deleteShader(s._id); } }
+  createShader(t) { return this._track(new WebGLShader(this._pmz.createShader(t), t), null, 'deleteShader', 'shader'); }
+  deleteShader(s) { if (s && !s._deleted) { this._untrack(s, null); this._pmz.deleteShader(s._id); } }
   isShader(s) { return !!s && !s._deleted; }
   shaderSource(s, src) {
     let text = String(src);
@@ -423,14 +528,21 @@ class WebGLRenderingContext {
     if (st === GL.FRAGMENT_SHADER && pt === GL.HIGH_FLOAT && !this._fragHighp) return new WebGLShaderPrecisionFormat([0, 0, 0]);
     return new WebGLShaderPrecisionFormat(this._pmz.getShaderPrecisionFormat(st, pt));
   }
-  createProgram() { const o = new WebGLProgram(this._pmz.createProgram()); this._reg.prog.set(o._id, o); return o; }
-  deleteProgram(p) { if (p && !p._deleted) { p._deleted = true; this._reg.prog.delete(p._id); this._pmz.deleteProgram(p._id); } }
+  createProgram() { return this._track(new WebGLProgram(this._pmz.createProgram()), 'prog', 'deleteProgram', 'prog'); }
+  deleteProgram(p) {
+    if (p && !p._deleted) {
+      this._untrack(p, 'prog');
+      if (p._shaders) p._shaders.clear();
+      if (this._bound.prog === p) this._bound.prog = null;
+      this._pmz.deleteProgram(p._id);
+    }
+  }
   isProgram(p) { return !!p && !p._deleted; }
-  attachShader(p, s) { this._pmz.attachShader(p._id, s._id); }
-  detachShader(p, s) { this._pmz.detachShader(p._id, s._id); }
+  attachShader(p, s) { if (p && p._shaders && s) p._shaders.add(s); this._pmz.attachShader(p._id, s._id); }
+  detachShader(p, s) { if (p && p._shaders && s) p._shaders.delete(s); this._pmz.detachShader(p._id, s._id); }
   linkProgram(p) { this._pmz.linkProgram(p._id); }
   validateProgram(p) { this._pmz.validateProgram(p._id); }
-  useProgram(p) { this._pmz.useProgram(id(p)); }
+  useProgram(p) { this._bound.prog = (p && !p._deleted) ? p : null; this._pmz.useProgram(id(p)); }
   getProgramParameter(p, n) {
     const v = this._pmz.getProgramParameter(p._id, n);
     return (n === GL.DELETE_STATUS || n === GL.LINK_STATUS || n === GL.VALIDATE_STATUS) ? v !== 0 : v;
@@ -467,7 +579,10 @@ class WebGLRenderingContext {
   // ---- vertex attributes / drawing ----
   enableVertexAttribArray(i) { this._pmz.enableVertexAttribArray(i); }
   disableVertexAttribArray(i) { this._pmz.disableVertexAttribArray(i); }
-  vertexAttribPointer(i, s, t, n, st, o) { this._pmz.vertexAttribPointer(i, s, t, n, st, o); }
+  vertexAttribPointer(i, s, t, n, st, o) {
+    (this._bound.vao || this._defVao)._attribs[i] = this._bound.ab;
+    this._pmz.vertexAttribPointer(i, s, t, n, st, o);
+  }
   vertexAttrib1f(i, x) { this._pmz.vertexAttrib1f(i, x); }
   vertexAttrib2f(i, x, y) { this._pmz.vertexAttrib2f(i, x, y); }
   vertexAttrib3f(i, x, y, z) { this._pmz.vertexAttrib3f(i, x, y, z); }

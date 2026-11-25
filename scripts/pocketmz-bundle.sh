@@ -7,14 +7,17 @@ set -e
 RZ=/storage/pocketmz
 VER=$(cat "$RZ/VERSION" 2>/dev/null || date +%Y%m%d)
 [ "$1" = --ports ] && shift
+BETA_ONLY=0
+[ "$1" = --beta-only ] && { BETA_ONLY=1; shift; }
 PORTS="${1:-/storage/PocketMZ-ports-$VER}"
 OUT="$PORTS/PocketMZ/pocketmz.tar"
 mkdir -p "$PORTS/PocketMZ"
-[ -f "$RZ/rootfs.sqfs" ] || { echo "no $RZ/rootfs.sqfs" >&2; exit 1; }
+[ "$BETA_ONLY" = 1 ] || [ -f "$RZ/rootfs.sqfs" ] || { echo "no $RZ/rootfs.sqfs" >&2; exit 1; }
 [ -f "$RZ/beta-runtime.sqfs" ] || { echo "no $RZ/beta-runtime.sqfs (build with beta/beta-image.sh)" >&2; exit 1; }
 cd "$RZ"
 LIST=""
-for f in rootfs.sqfs beta-runtime.sqfs VERSION patches launcher vendor ports README.md LICENSE THIRD-PARTY.txt pocketmz.gptk \
+[ "$BETA_ONLY" = 1 ] || LIST="rootfs.sqfs"
+for f in beta-runtime.sqfs VERSION patches launcher vendor ports README.md LICENSE THIRD-PARTY.txt pocketmz.gptk \
          pocketmz-run.sh pocketmz-menu.sh pocketmz-mkgame.sh pocketmz-chroot.sh pocketmz-install.sh pocketmz-maint.sh \
          pocketmz-uninstall.sh pocketmz-betascan.sh pocketmz-pack.sh pocketmz-licenses.sh \
          pocketmz-launcher.py pocketmz-library.py pocketmz-pad.py pocketmz-fonts.py \
@@ -22,6 +25,7 @@ for f in rootfs.sqfs beta-runtime.sqfs VERSION patches launcher vendor ports REA
   [ -e "$f" ] || { echo "missing $RZ/$f" >&2; exit 1; }
   LIST="$LIST $f"
 done
+[ -f pocketmz-probe.py ] && LIST="$LIST pocketmz-probe.py"
 tar -cf "$OUT" --exclude=launcher/library --exclude=launcher/dev-sample --exclude=patches/PocketMZ_Debug.js $LIST
 cp "$RZ/VERSION" "$PORTS/PocketMZ/VERSION"
 cp "$RZ/ports/PocketMZ.sh" "$PORTS/PocketMZ.sh"
