@@ -9,6 +9,7 @@
 #include <setjmp.h>
 #include <jpeglib.h>
 #include <webp/decode.h>
+#include "pmzrt_gif.h"
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -538,7 +539,27 @@ DEFR(getFloatv, 2, GLfloat v[16] = {0}; int n = I(1); if (n > 16) n = 16; glGetF
 DEFR(getBooleanv, 2, GLboolean v[16] = {0}; int n = I(1); if (n > 16) n = 16; glGetBooleanv(E(0), v); double d[16]; for (int i = 0; i < n; i++) d[i] = v[i]; return ret_arr_d(env, d, n);)
 
 // ---- PNG ----
-static void free_cb(napi_env env, void *data, void *hint) { free(data); }
+static void ext_mem_free_cb(napi_env env, void *data, void *hint) {
+  size_t sz = (size_t)(uintptr_t)hint;
+  if (sz) { int64_t adj; napi_adjust_external_memory(env, -(int64_t)sz, &adj); }
+  free(data);
+}
+static napi_value rgba_result(napi_env env, uint8_t *buf, size_t size, int w, int h) {
+  napi_value o, ab, ta; napi_create_object(env, &o);
+  napi_create_external_arraybuffer(env, buf, size, ext_mem_free_cb, (void *)(uintptr_t)size, &ab);
+  if (size) { int64_t adj; napi_adjust_external_memory(env, (int64_t)size, &adj); }
+  napi_create_typedarray(env, napi_uint8_array, size, ab, 0, &ta);
+  set_int(env, o, "width", w); set_int(env, o, "height", h); napi_set_named_property(env, o, "data", ta);
+  return o;
+}
+static napi_value AdjustExternalMemory(napi_env env, napi_callback_info info) {
+  size_t argc = 1; napi_value a_[1]; napi_get_cb_info(env, info, &argc, a_, NULL, NULL);
+  double delta = argc > 0 ? arg_d(env, a_, argc, 0) : 0;
+  int64_t cur = 0;
+  napi_adjust_external_memory(env, (int64_t)delta, &cur);
+  napi_value r; napi_create_double(env, (double)cur, &r);
+  return r;
+}
 // decodePng(bytes) -> { width, height, data: Uint8Array RGBA non-premultiplied }  (data is an external buffer, freed by GC)
 static napi_value DecodePng(napi_env env, napi_callback_info info) {
   BEGIN(1); void *p; size_t len;
@@ -549,21 +570,10 @@ static napi_value DecodePng(napi_env env, napi_callback_info info) {
   size_t size = PNG_IMAGE_SIZE(img); uint8_t *buf = malloc(size ? size : 1);
   if (!buf) { png_image_free(&img); napi_throw_error(env, NULL, "decodePng: out of memory"); return NULL; }
   if (!png_image_finish_read(&img, NULL, buf, 0, NULL)) { char m[256]; snprintf(m, sizeof m, "%s", img.message); free(buf); png_image_free(&img); napi_throw_error(env, NULL, m); return NULL; }
-  napi_value o, ab, ta; napi_create_object(env, &o);
-  napi_create_external_arraybuffer(env, buf, size, free_cb, NULL, &ab);
-  napi_create_typedarray(env, napi_uint8_array, size, ab, 0, &ta);
-  set_int(env, o, "width", img.width); set_int(env, o, "height", img.height); napi_set_named_property(env, o, "data", ta);
-  return o;
+  return rgba_result(env, buf, size, (int)img.width, (int)img.height);
 }
 
 // ---- JPEG / WebP (same result shape as decodePng) ----
-static napi_value rgba_result(napi_env env, uint8_t *buf, size_t size, int w, int h) {
-  napi_value o, ab, ta; napi_create_object(env, &o);
-  napi_create_external_arraybuffer(env, buf, size, free_cb, NULL, &ab);
-  napi_create_typedarray(env, napi_uint8_array, size, ab, 0, &ta);
-  set_int(env, o, "width", w); set_int(env, o, "height", h); napi_set_named_property(env, o, "data", ta);
-  return o;
-}
 struct jerr { struct jpeg_error_mgr pub; jmp_buf jb; char msg[JMSG_LENGTH_MAX]; };
 static void jerr_exit(j_common_ptr c) { struct jerr *e = (struct jerr *)c->err; (*c->err->format_message)(c, e->msg); longjmp(e->jb, 1); }
 static void jerr_silent(j_common_ptr c, int lvl) {}
@@ -588,16 +598,194 @@ static napi_value DecodeJpeg(napi_env env, napi_callback_info info) {
   jpeg_finish_decompress(&c); jpeg_destroy_decompress(&c);
   return rgba_result(env, buf, size, w, h);
 }
-// decodeWebp(bytes) -> { width, height, data RGBA non-premultiplied } (lossy, lossless, alpha; first frame of an animation is not supported)
+static napi_value make_ext_u8(napi_env env, uint8_t *buf, size_t size) {
+  napi_value ab, ta;
+  napi_create_external_arraybuffer(env, buf, size, ext_mem_free_cb, (void *)(uintptr_t)size, &ab);
+  if (size) { int64_t adj; napi_adjust_external_memory(env, (int64_t)size, &adj); }
+  napi_create_typedarray(env, napi_uint8_array, size, ab, 0, &ta);
+  return ta;
+}
+
+static uint32_t read_u24_le(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+}
+static uint32_t read_u32_le(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static int decode_anim_webp(napi_env env, const uint8_t *p, size_t len, napi_value *out_obj) {
+  if (len < 22 || memcmp(p, "RIFF", 4) != 0 || memcmp(p + 8, "WEBP", 4) != 0) return 0;
+  size_t pos = 12;
+  int has_anim = 0, cw = 0, ch = 0;
+  while (pos + 8 <= len) {
+    const uint8_t *chdr = p + pos;
+    uint32_t csz = read_u32_le(chdr + 4);
+    size_t pay = pos + 8;
+    size_t step = 8u + (size_t)csz + ((csz & 1u) ? 1u : 0u);
+    if (pay + csz > len) break;
+    if (memcmp(chdr, "VP8X", 4) == 0 && csz >= 10) {
+      if (p[pay] & 0x02) {
+        has_anim = 1;
+        cw = (int)read_u24_le(p + pay + 4) + 1;
+        ch = (int)read_u24_le(p + pay + 7) + 1;
+      }
+      break;
+    }
+    pos += step;
+  }
+  if (!has_anim || cw <= 0 || ch <= 0 || cw > 8192 || ch > 8192) return 0;
+  size_t frame_bytes = (size_t)cw * (size_t)ch * 4u;
+  if (frame_bytes > PMZ_GIF_MAX_BYTES) return 0;
+
+  uint8_t *canvas = (uint8_t *)calloc(1, frame_bytes);
+  if (!canvas) return -1;
+
+  napi_value frames_arr;
+  napi_create_array(env, &frames_arr);
+  napi_value first_ta = NULL;
+  uint32_t fidx = 0;
+  size_t total_bytes = 0;
+
+  pos = 12;
+  while (pos + 8 <= len && fidx < PMZ_GIF_MAX_FRAMES && total_bytes + frame_bytes <= PMZ_GIF_MAX_BYTES) {
+    const uint8_t *chdr = p + pos;
+    uint32_t csz = read_u32_le(chdr + 4);
+    size_t pay = pos + 8;
+    size_t step = 8u + (size_t)csz + ((csz & 1u) ? 1u : 0u);
+    if (pay + csz > len) break;
+    if (memcmp(chdr, "ANMF", 4) == 0 && csz > 16) {
+      int fx = (int)read_u24_le(p + pay) * 2;
+      int fy = (int)read_u24_le(p + pay + 3) * 2;
+      int dur = (int)read_u24_le(p + pay + 12);
+      uint8_t flags = p[pay + 15];
+      size_t sub_len = csz - 16;
+      size_t synth_len = 12 + sub_len;
+      uint8_t *synth = (uint8_t *)malloc(synth_len);
+      if (!synth) { free(canvas); return -1; }
+      memcpy(synth, "RIFF", 4);
+      uint32_t riff_sz = (uint32_t)(4 + sub_len);
+      synth[4] = (uint8_t)(riff_sz & 0xff);
+      synth[5] = (uint8_t)((riff_sz >> 8) & 0xff);
+      synth[6] = (uint8_t)((riff_sz >> 16) & 0xff);
+      synth[7] = (uint8_t)((riff_sz >> 24) & 0xff);
+      memcpy(synth + 8, "WEBP", 4);
+      memcpy(synth + 12, p + pay + 16, sub_len);
+
+      int dw = 0, dh = 0;
+      uint8_t *dec = WebPDecodeRGBA(synth, synth_len, &dw, &dh);
+      free(synth);
+      if (dec) {
+        int no_blend = (flags & 0x02) != 0;
+        for (int y = 0; y < dh; y++) {
+          int cy = fy + y;
+          if (cy < 0 || cy >= ch) continue;
+          for (int x = 0; x < dw; x++) {
+            int cx = fx + x;
+            if (cx < 0 || cx >= cw) continue;
+            const uint8_t *s = dec + ((size_t)y * (size_t)dw + (size_t)x) * 4u;
+            uint8_t *d = canvas + ((size_t)cy * (size_t)cw + (size_t)cx) * 4u;
+            if (no_blend || s[3] == 255) {
+              d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+            } else if (s[3] > 0) {
+              uint32_t sa = s[3], da = d[3];
+              uint32_t oa = sa + ((da * (255u - sa) + 127u) / 255u);
+              if (oa > 0) {
+                d[0] = (uint8_t)((s[0] * sa + ((d[0] * da * (255u - sa) + 127u) / 255u)) / oa);
+                d[1] = (uint8_t)((s[1] * sa + ((d[1] * da * (255u - sa) + 127u) / 255u)) / oa);
+                d[2] = (uint8_t)((s[2] * sa + ((d[2] * da * (255u - sa) + 127u) / 255u)) / oa);
+                d[3] = (uint8_t)oa;
+              }
+            }
+          }
+        }
+        uint8_t *snap = (uint8_t *)malloc(frame_bytes ? frame_bytes : 1);
+        if (!snap) { WebPFree(dec); free(canvas); return -1; }
+        memcpy(snap, canvas, frame_bytes);
+        napi_value ta = make_ext_u8(env, snap, frame_bytes);
+        if (!first_ta) first_ta = ta;
+        napi_value fobj;
+        napi_create_object(env, &fobj);
+        napi_set_named_property(env, fobj, "data", ta);
+        set_int(env, fobj, "delayMs", dur > 0 ? dur : 100);
+        napi_set_element(env, frames_arr, fidx++, fobj);
+        total_bytes += frame_bytes;
+
+        if (flags & 0x01) {
+          for (int y = 0; y < dh; y++) {
+            int cy = fy + y;
+            if (cy < 0 || cy >= ch) continue;
+            for (int x = 0; x < dw; x++) {
+              int cx = fx + x;
+              if (cx < 0 || cx >= cw) continue;
+              uint8_t *d = canvas + ((size_t)cy * (size_t)cw + (size_t)cx) * 4u;
+              d[0] = d[1] = d[2] = d[3] = 0;
+            }
+          }
+        }
+        WebPFree(dec);
+      }
+    }
+    pos += step;
+  }
+  free(canvas);
+  if (fidx == 0) return 0;
+
+  napi_value o;
+  napi_create_object(env, &o);
+  set_int(env, o, "width", cw);
+  set_int(env, o, "height", ch);
+  napi_set_named_property(env, o, "data", first_ta);
+  napi_set_named_property(env, o, "frames", frames_arr);
+  *out_obj = o;
+  return 1;
+}
+
+// decodeWebp(bytes) -> { width, height, data RGBA non-premultiplied, frames? }
 static napi_value DecodeWebp(napi_env env, napi_callback_info info) {
   BEGIN(1); void *p; size_t len;
   if (!argbytes(env, a_[0], &p, &len)) { napi_throw_type_error(env, NULL, "decodeWebp: buffer expected"); return NULL; }
+  napi_value anim_obj = NULL;
+  int ar = decode_anim_webp(env, (const uint8_t *)p, len, &anim_obj);
+  if (ar == 1) return anim_obj;
+  if (ar < 0) { napi_throw_error(env, NULL, "decodeWebp: out of memory"); return NULL; }
   int w = 0, h = 0; if (!WebPGetInfo(p, len, &w, &h)) { napi_throw_error(env, NULL, "decodeWebp: not a WebP"); return NULL; }
   uint8_t *rgba = WebPDecodeRGBA(p, len, &w, &h); if (!rgba) { napi_throw_error(env, NULL, "decodeWebp failed"); return NULL; }
   size_t size = (size_t)w * h * 4; uint8_t *buf = malloc(size ? size : 1);   // copy: the WebP buffer must be released with WebPFree, our external buffer with free
   if (!buf) { WebPFree(rgba); napi_throw_error(env, NULL, "decodeWebp: out of memory"); return NULL; }
   memcpy(buf, rgba, size); WebPFree(rgba);
   return rgba_result(env, buf, size, w, h);
+}
+
+// decodeGif(bytes) -> { width, height, data, frames: [{ data, delayMs }] }
+static napi_value DecodeGif(napi_env env, napi_callback_info info) {
+  BEGIN(1); void *p; size_t len;
+  if (!argbytes(env, a_[0], &p, &len)) { napi_throw_type_error(env, NULL, "decodeGif: buffer expected"); return NULL; }
+  pmz_gif_result_t res;
+  if (!pmz_gif_decode((const uint8_t *)p, len, &res)) {
+    napi_throw_error(env, NULL, "decodeGif: invalid or unsupported GIF");
+    return NULL;
+  }
+  size_t frame_bytes = (size_t)res.width * (size_t)res.height * 4u;
+  napi_value o, frames_arr, first_ta = NULL;
+  napi_create_object(env, &o);
+  napi_create_array_with_length(env, (size_t)res.frame_count, &frames_arr);
+  for (int i = 0; i < res.frame_count; i++) {
+    uint8_t *buf = res.frames[i].rgba;
+    res.frames[i].rgba = NULL;
+    napi_value ta = make_ext_u8(env, buf, frame_bytes);
+    if (i == 0) first_ta = ta;
+    napi_value fobj;
+    napi_create_object(env, &fobj);
+    napi_set_named_property(env, fobj, "data", ta);
+    set_int(env, fobj, "delayMs", res.frames[i].delay_ms);
+    napi_set_element(env, frames_arr, (uint32_t)i, fobj);
+  }
+  set_int(env, o, "width", res.width);
+  set_int(env, o, "height", res.height);
+  napi_set_named_property(env, o, "data", first_ta);
+  napi_set_named_property(env, o, "frames", frames_arr);
+  pmz_gif_free(&res);
+  return o;
 }
 // writePng(path, width, height, rgba, flipY): used for screenshots
 static napi_value WritePng(napi_env env, napi_callback_info info) {
@@ -620,7 +808,7 @@ static napi_value WritePng(napi_env env, napi_callback_info info) {
 NAPI_MODULE_INIT() {
   EXPORT("init", Init_); EXPORT("pollEvents", PollEvents); EXPORT("swap", Swap); EXPORT("shutdown", Shutdown);
   EXPORT("glClearColor", GlClearColor); EXPORT("glClear", GlClear); EXPORT("glViewport", GlViewport);
-  EXPORT("drawTestTriangle", DrawTestTriangle); EXPORT("decodePng", DecodePng); EXPORT("decodeJpeg", DecodeJpeg); EXPORT("decodeWebp", DecodeWebp); EXPORT("writePng", WritePng);
+  EXPORT("drawTestTriangle", DrawTestTriangle); EXPORT("decodePng", DecodePng); EXPORT("decodeJpeg", DecodeJpeg); EXPORT("decodeWebp", DecodeWebp); EXPORT("decodeGif", DecodeGif); EXPORT("writePng", WritePng); EXPORT("adjustExternalMemory", AdjustExternalMemory);
   for (int i = 0; i < g_nregs; i++) EXPORT(g_regs[i].name, g_regs[i].fn);
   napi_value c; napi_create_int32(env, GL_COLOR_BUFFER_BIT, &c); napi_set_named_property(env, exports, "COLOR_BUFFER_BIT", c);
   return exports;

@@ -17,9 +17,23 @@
     "use strict";
     if (!window.Utils || Utils.RPGMAKER_NAME !== "MV") return;
 
+    if (window.process && process.env && process.env.POCKETMZ_COMPAT_MODE === "1") {
+        for (const k of [
+            "POCKETMZ_MAP_REFRESH_GUARD", "POCKETMZ_CLOSED_WIN_SKIP", "POCKETMZ_EMPTY_CHAR_SKIP",
+            "POCKETMZ_EMPTY_PIC_SKIP", "POCKETMZ_TONEFILTER_FIX", "POCKETMZ_WIN_SCALE",
+            "POCKETMZ_TILE_ATLAS", "POCKETMZ_SKIPBRANCH_CACHE"
+        ]) {
+            if (!process.env[k]) process.env[k] = "off";
+        }
+    }
+
     const AUDIO_SAMPLE_RATE = 24000;
 
     // 0. No page scrollbars (elements sized for a PC window can overflow the 640x480 screen)
+// --- module: patches/src/common/viewport-stretch.js ---
+    // No page scrollbars: the game is one canvas sized to the screen, but other elements sized
+    // for a PC window (e.g. an error screen plugin's 1152 px error box) overflow the 640x480
+    // screen and the browser shows scrollbars over the game.
     const noScroll = () => {
         for (const el of [document.documentElement, document.body]) if (el) el.style.overflow = "hidden";
     };
@@ -40,7 +54,7 @@
     // Start sends Escape again (cancel / menu); quitting is F2 + Start (pocketmz-hotkeys.py ->
     // PocketMZ_Menu.js). End stays an alias of Escape for button maps made while Start sent End.
     if (window.Input && Input.keyMapper) Input.keyMapper[35] = "escape";
-
+// --- module: patches/src/handheld-mv/10-input-audio-fps.js ---
     // 1. Gamepad
     if (window.Input && Input._updateGamepadState) Input._updateGamepadState = function() {};
 
@@ -232,7 +246,7 @@
             _updRenderer.call(this);
         };
     }
-
+// --- module: patches/src/handheld-mv/20-img-scale.js ---
     // 6. Large images kept at screen resolution (same idea as PocketMZ_Handheld.js section 17).
     //    MV decodes an image when it is first used (Bitmap#decode) and draws from _image, making a
     //    full-size canvas only when something draws into the bitmap. Large pictures / title
@@ -706,7 +720,7 @@
             return small(this) ? pixel(this, x, y)[3] : _getAlpha.apply(this, arguments);
         };
     }
-
+// --- module: patches/src/handheld-mv/30-windows-gc.js ---
     // 7. Window contents freed when replaced. MV's Window_Base#createContents makes a new Bitmap
     //    (a canvas the size of the window) and drops the old one without freeing it; MZ destroys
     //    it first. Message / name-box plugins recreate contents for every message, and the old
@@ -806,8 +820,8 @@
         const gc = Graphics._renderer && Graphics._renderer.textureGC;   // renderer made already?
         if (gc) { gc.maxIdle = 900; gc.checkCountMax = 300; }
     }
-
-    // 10. Full GC after scene changes and when memory runs low. Dropped canvases, images and decoded
+// --- module: patches/src/common/gc-scheduler.js ---
+    // 18. Full GC after scene changes and when memory runs low. Dropped canvases, images and decoded
     //     audio (WebAudio buffers: 20-50 MB per BGM at 24 kHz) live outside the small JS heap, so V8
     //     rarely collects their owners on its own: in an MZ game decoded audio grew to 153 MB and
     //     images to 95 MB within 10 minutes of maps and battles, most of it garbage. With
@@ -839,52 +853,80 @@
             } catch (e) { /* no /proc */ }
         }, 15000);
     }
-
-    // 11. Decoded sound effects reused (as PocketMZ_Handheld.js section 19). MV loads and decodes an
-    //     SE file again for every playSe; footstep plugins play one per step. Short SE files
-    //     (audio/se/, <= 10 s) are decoded once and their AudioBuffer is shared by later plays
-    //     (24 MB, least recently used out). POCKETMZ_SE_CACHE=off disables it.
-    if (window.WebAudio && WebAudio.prototype._load && WebAudio.prototype._onLoad &&
+// --- module: patches/src/common/se-cache.js ---
+    // Decoded sound effects reused (24 MB LRU for audio/se/ <= 10 s).
+    // Supports both MZ (_startLoading/_onDecode) and MV (_load/_onLoad); POCKETMZ_SE_CACHE=off disables it.
+    if (window.WebAudio &&
         String((window.process && process.env && process.env.POCKETMZ_SE_CACHE) || "on") !== "off") {
         const W = WebAudio.prototype;
         const SE = new Map(), SE_MAX = 24 << 20;
         const PMZ_SE = window.PMZ_SE = { hits: 0, stored: 0, bytes: 0, size: () => SE.size };
         const isSe = url => /(^|\/)audio\/se\//.test(String(url || ""));
         const bytesOf = b => b.length * b.numberOfChannels * 4;
-        const _load = W._load;
-        W._load = function(url) {
-            const hit = isSe(this._url) && SE.get(this._url);
-            if (!hit || !WebAudio._context) return _load.apply(this, arguments);
-            SE.delete(this._url); SE.set(this._url, hit);
-            PMZ_SE.hits++;
-            // MV's own decode callback sets these (loop points already in seconds) and calls _onLoad
-            Promise.resolve().then(() => {
-                if (this._url !== hit.url || this._buffer) return;
-                this._buffer = hit.buffer;
-                this._totalTime = hit.totalTime;
-                this._sampleRate = hit.sampleRate;
-                this._loopStart = hit.loopStart;
-                this._loopLength = hit.loopLength;
-                this._onLoad();
-            });
-        };
-        const _onLoad = W._onLoad;
-        W._onLoad = function() {
-            const b = this._buffer;
-            if (b && isSe(this._url) && b.duration <= 10 && !SE.has(this._url)) {
-                SE.set(this._url, { url: this._url, buffer: b, totalTime: this._totalTime, sampleRate: this._sampleRate,
-                                    loopStart: this._loopStart, loopLength: this._loopLength });
-                PMZ_SE.bytes += bytesOf(b); PMZ_SE.stored++;
-                for (const [k, v] of SE) {
-                    if (PMZ_SE.bytes <= SE_MAX) break;
-                    SE.delete(k); PMZ_SE.bytes -= bytesOf(v.buffer);
-                }
+        const evictSe = () => {
+            for (const [k, v] of SE) {
+                if (PMZ_SE.bytes <= SE_MAX) break;
+                SE.delete(k); PMZ_SE.bytes -= bytesOf(v.buffer);
             }
-            return _onLoad.apply(this, arguments);
         };
+        if (W._startLoading && W._onDecode) {
+            const _startLoading = W._startLoading;
+            W._startLoading = function() {
+                const hit = isSe(this._url) && SE.get(this._url);
+                if (!hit || !WebAudio._context) return _startLoading.apply(this, arguments);
+                SE.delete(this._url); SE.set(this._url, hit);
+                this._isError = false;
+                this._isLoaded = true;
+                this._sampleRate = hit.sampleRate; this._loopStart = hit.loopStart; this._loopLength = hit.loopLength;
+                this._lastUpdateTime = WebAudio._currentTime() - 0.5;
+                PMZ_SE.hits++;
+                Promise.resolve().then(() => {
+                    if (this._url === hit.url && this._buffers && !this._buffers.length) this._onDecode(hit.buffer);
+                });
+            };
+            const _onDecode = W._onDecode;
+            W._onDecode = function(buffer) {
+                if (buffer && this._isLoaded && isSe(this._url) && !this._shouldUseDecoder() &&
+                    buffer.duration <= 10 && !SE.has(this._url)) {
+                    SE.set(this._url, { url: this._url, buffer, sampleRate: this._sampleRate,
+                                        loopStart: this._loopStart, loopLength: this._loopLength });
+                    PMZ_SE.bytes += bytesOf(buffer); PMZ_SE.stored++;
+                    evictSe();
+                }
+                return _onDecode.apply(this, arguments);
+            };
+        } else if (W._load && W._onLoad) {
+            const _load = W._load;
+            W._load = function(url) {
+                const hit = isSe(this._url) && SE.get(this._url);
+                if (!hit || !WebAudio._context) return _load.apply(this, arguments);
+                SE.delete(this._url); SE.set(this._url, hit);
+                PMZ_SE.hits++;
+                Promise.resolve().then(() => {
+                    if (this._url !== hit.url || this._buffer) return;
+                    this._buffer = hit.buffer;
+                    this._totalTime = hit.totalTime;
+                    this._sampleRate = hit.sampleRate;
+                    this._loopStart = hit.loopStart;
+                    this._loopLength = hit.loopLength;
+                    this._onLoad();
+                });
+            };
+            const _onLoad = W._onLoad;
+            W._onLoad = function() {
+                const b = this._buffer;
+                if (b && isSe(this._url) && b.duration <= 10 && !SE.has(this._url)) {
+                    SE.set(this._url, { url: this._url, buffer: b, totalTime: this._totalTime, sampleRate: this._sampleRate,
+                                        loopStart: this._loopStart, loopLength: this._loopLength });
+                    PMZ_SE.bytes += bytesOf(b); PMZ_SE.stored++;
+                    evictSe();
+                }
+                return _onLoad.apply(this, arguments);
+            };
+        }
     }
-
-    // 12. The current map's JSON text kept. Scene_Map#create loads the map file again every time
+// --- module: patches/src/common/map-json-cache.js ---
+    // 20. The current map's JSON text kept. Scene_Map#create loads the map file again every time
     //     the map scene comes back (after the menu, a battle, a shop): a 2 MB map with 137 events
     //     took 250-540 ms to read in an MV game (1.5 s cold) before parsing. The text of the last
     //     loaded map stays in memory, and loading the same map again parses that text and runs
@@ -923,7 +965,7 @@
             try { return _loadDataFile.apply(this, arguments); } finally { XMLHttpRequest.prototype.send = _send; }
         };
     }
-
+// --- module: patches/src/handheld-mv/40-window-scale-tilemap.js ---
     // 9. Window bitmaps drawn at the display scale (as PocketMZ_Handheld.js section 17, MV 1.6's
     //    lazy Bitmap: __canvas / __context / __baseTexture). A 1600x1000 game makes window-size
     //    canvases for the contents, the back and the frame of every window and draws text into
@@ -1184,8 +1226,8 @@
             return src;
         };
     }
-
-    // 14. Game_Interpreter.skipBranch jump table (avoid linear re-scan of long event lists)
+// --- module: patches/src/common/skip-branch.js ---
+    // 25. Game_Interpreter.skipBranch jump table (avoid linear re-scan of long event lists)
     if (String((window.process && process.env && process.env.POCKETMZ_SKIPBRANCH_CACHE) || "on").toLowerCase() !== "off" &&
         window.Game_Interpreter && Game_Interpreter.prototype.skipBranch &&
         !Game_Interpreter.prototype.skipBranch._pmzCached) {
@@ -1215,7 +1257,7 @@
             Game_Interpreter.prototype.skipBranch = wrapped;
         }
     }
-
+// --- module: patches/src/handheld-mv/50-reqimg-render.js ---
     // 15. Game_Interpreter.requestImages deduplication per map/cache generation
     if (String((window.process && process.env && process.env.POCKETMZ_REQIMG_CACHE) || "on").toLowerCase() !== "off" &&
         window.Game_Interpreter && typeof Game_Interpreter.requestImages === "function" &&

@@ -18,11 +18,13 @@ import json
 import math
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 RZ = os.environ.get("POCKETMZ_DATA", "/storage/pocketmz")
@@ -37,17 +39,31 @@ img = None
 ttf = None
 if not SELFTEST:
     sys.path.insert(0, os.path.join(HERE, "vendor"))
-    os.environ.setdefault("PYSDL2_DLL_PATH", "/usr/lib")
-    if sys.platform.startswith("linux"):
-        os.environ.setdefault("SDL_VIDEODRIVER", "wayland")
+    os.environ.setdefault("PYSDL2_DLL_PATH", "/usr/lib:/usr/lib/aarch64-linux-gnu:/usr/local/lib:/lib/aarch64-linux-gnu")
+    if sys.platform.startswith("linux") and not os.environ.get("SDL_VIDEODRIVER"):
+        xr = os.environ.get("XDG_RUNTIME_DIR", "/var/run/0-runtime-dir")
+        wd = os.environ.get("WAYLAND_DISPLAY", "wayland-1")
+        if os.path.exists(os.path.join(xr, wd)):
+            os.environ["SDL_VIDEODRIVER"] = "wayland"
+        elif os.environ.get("DISPLAY"):
+            os.environ["SDL_VIDEODRIVER"] = "x11"
+        elif os.path.exists("/dev/dri/card0"):
+            os.environ["SDL_VIDEODRIVER"] = "kmsdrm"
     os.environ["SDL_VIDEO_WAYLAND_WMCLASS"] = "pocketmz-menu"   # app_id; the caller focuses by it
     import sdl2
-    import sdl2.sdlimage as img
+    try:
+        import sdl2.sdlimage as img
+    except Exception as _img_err:
+        img = None
+        sys.stderr.write("SDL2_image unavailable, using fallback PNG loader: %s\n" % _img_err)
     import sdl2.sdlttf as ttf
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/noto-cjk/NotoSansCJKsc-Regular.otf",
-    "/storage/pocketmz/root-sqfs/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    os.path.join(RZ, "root-sqfs/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
     "/usr/config/emulationstation/resources/DroidSansFallbackFull.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
@@ -357,11 +373,117 @@ def selftest():
     ok, msg, _ = parse_maint_output("", 3)
     assert not ok and "3" in msg
     assert parse_package([], "OK") == ("", "")
+    # verify pure-Python PNG decoder on a minimal 2x2 RGBA PNG
+    def _png_chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    ihdr = struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0)
+    raw_rows = b"\x00" + b"\x01\x02\x03\x04\x05\x06\x07\x08" + b"\x01" + b"\x10\x20\x30\x40\x01\x02\x03\x04"
+    png_bytes = b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", ihdr) + _png_chunk(b"IDAT", zlib.compress(raw_rows)) + _png_chunk(b"IEND", b"")
+    tmp_png = os.path.join(RZ, "test.png")
+    with open(tmp_png, "wb") as f:
+        f.write(png_bytes)
+    dw, dh, drgba = decode_png_rgba(tmp_png)
+    assert (dw, dh, len(drgba)) == (2, 2, 16)
+    assert drgba[:8] == b"\x01\x02\x03\x04\x05\x06\x07\x08"
+    assert drgba[8:16] == b"\x10\x20\x30\x40\x11\x22\x33\x44"
     print("launcher+settings selftest ok")
     return 0
 
 
 # ---------- small helpers ----------
+def decode_png_rgba(path):
+    """Minimal pure-Python 8-bit PNG -> (w, h, rgba_bytes) fallback when SDL2_image is unavailable."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not png")
+    pos = 8
+    w = h = bit = ctype = interlace = 0
+    idat = []
+    plte = b""
+    trns = b""
+    while pos + 12 <= len(data):
+        ln = struct.unpack_from(">I", data, pos)[0]
+        tag = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + ln]
+        pos += 12 + ln
+        if tag == b"IHDR":
+            w, h, bit, ctype, _, _, interlace = struct.unpack(">IIBBBBB", chunk)
+            if bit != 8 or interlace != 0 or w <= 0 or h <= 0 or w * h > 4096 * 4096:
+                raise ValueError("unsupported png")
+        elif tag == b"PLTE":
+            plte = chunk
+        elif tag == b"tRNS":
+            trns = chunk
+        elif tag == b"IDAT":
+            idat.append(chunk)
+        elif tag == b"IEND":
+            break
+    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(ctype)
+    if not ch:
+        raise ValueError("unsupported color type")
+    raw = zlib.decompress(b"".join(idat))
+    stride = w * ch
+    if len(raw) < (stride + 1) * h:
+        raise ValueError("truncated idat")
+    bpp = ch
+    prev = bytearray(stride)
+    out = bytearray(w * h * 4)
+    idx = 0
+    for y in range(h):
+        ftype = raw[idx]
+        idx += 1
+        row = bytearray(raw[idx:idx + stride])
+        idx += stride
+        if ftype == 1:
+            for i in range(bpp, stride):
+                row[i] = (row[i] + row[i - bpp]) & 0xFF
+        elif ftype == 2:
+            for i in range(stride):
+                row[i] = (row[i] + prev[i]) & 0xFF
+        elif ftype == 3:
+            for i in range(stride):
+                left = row[i - bpp] if i >= bpp else 0
+                row[i] = (row[i] + ((left + prev[i]) >> 1)) & 0xFF
+        elif ftype == 4:
+            for i in range(stride):
+                a = row[i - bpp] if i >= bpp else 0
+                b = prev[i]
+                c = prev[i - bpp] if i >= bpp else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                row[i] = (row[i] + pr) & 0xFF
+        prev = row
+        dst = y * w * 4
+        if ctype == 6:
+            out[dst:dst + w * 4] = row
+        elif ctype == 2:
+            for x in range(w):
+                s = x * 3
+                d = dst + x * 4
+                out[d] = row[s]; out[d + 1] = row[s + 1]; out[d + 2] = row[s + 2]; out[d + 3] = 255
+        elif ctype == 0:
+            for x in range(w):
+                v = row[x]
+                d = dst + x * 4
+                out[d] = v; out[d + 1] = v; out[d + 2] = v; out[d + 3] = 255
+        elif ctype == 4:
+            for x in range(w):
+                v = row[x * 2]; a = row[x * 2 + 1]
+                d = dst + x * 4
+                out[d] = v; out[d + 1] = v; out[d + 2] = v; out[d + 3] = a
+        elif ctype == 3:
+            for x in range(w):
+                ci = row[x]
+                p3 = ci * 3
+                d = dst + x * 4
+                if p3 + 3 <= len(plte):
+                    out[d] = plte[p3]; out[d + 1] = plte[p3 + 1]; out[d + 2] = plte[p3 + 2]
+                out[d + 3] = trns[ci] if ci < len(trns) else 255
+    return w, h, bytes(out)
+
+
 def num(v):
     try:
         return float(v)
@@ -505,18 +627,41 @@ class Menu:
     def init_sdl(self):
         sdl2.SDL_SetHint(sdl2.SDL_HINT_RENDER_SCALE_QUALITY, b"1")
         sdl2.SDL_SetHint(b"SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", b"1")
-        if sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_GAMECONTROLLER | sdl2.SDL_INIT_EVENTS) != 0:
-            raise RuntimeError("SDL_Init: " + sdl2.SDL_GetError().decode("utf-8", "replace"))
+        tried = []
+        cands = [os.environ.get("SDL_VIDEODRIVER") or ""]
+        for d in ("", "kmsdrm", "x11", "wayland", "fbcon", "mali"):
+            if d not in cands:
+                cands.append(d)
+        ok_init = False
+        for drv in cands:
+            if drv:
+                os.environ["SDL_VIDEODRIVER"] = drv
+            else:
+                os.environ.pop("SDL_VIDEODRIVER", None)
+            if sdl2.SDL_Init(sdl2.SDL_INIT_VIDEO | sdl2.SDL_INIT_GAMECONTROLLER | sdl2.SDL_INIT_EVENTS) != 0:
+                err = sdl2.SDL_GetError().decode("utf-8", "replace")
+                tried.append("%s:init=%s" % (drv or "auto", err))
+                sdl2.SDL_Quit()
+                continue
+            self.win = sdl2.SDL_CreateWindow(
+                b"PocketMZ", sdl2.SDL_WINDOWPOS_UNDEFINED, sdl2.SDL_WINDOWPOS_UNDEFINED, 640, 480,
+                sdl2.SDL_WINDOW_FULLSCREEN_DESKTOP)
+            if not self.win:
+                err = sdl2.SDL_GetError().decode("utf-8", "replace")
+                tried.append("%s:win=%s" % (drv or "auto", err))
+                sdl2.SDL_Quit()
+                continue
+            sys.stderr.write("SDL video driver: %s\n" % (drv or "auto"))
+            ok_init = True
+            break
+        if not ok_init:
+            raise RuntimeError("SDL video init failed (%s)" % "; ".join(tried))
         if ttf.TTF_Init() != 0:
             raise RuntimeError("TTF_Init failed")
-        img.IMG_Init(img.IMG_INIT_PNG | img.IMG_INIT_JPG)
+        if img:
+            img.IMG_Init(img.IMG_INIT_PNG | img.IMG_INIT_JPG)
         if os.path.exists(GAMEPAD_DB):
             sdl2.SDL_GameControllerAddMappingsFromFile(os.fsencode(GAMEPAD_DB))
-        self.win = sdl2.SDL_CreateWindow(
-            b"PocketMZ", sdl2.SDL_WINDOWPOS_UNDEFINED, sdl2.SDL_WINDOWPOS_UNDEFINED, 640, 480,
-            sdl2.SDL_WINDOW_FULLSCREEN_DESKTOP)
-        if not self.win:
-            raise RuntimeError("SDL_CreateWindow: " + sdl2.SDL_GetError().decode("utf-8", "replace"))
         self.ren = sdl2.SDL_CreateRenderer(
             self.win, -1, sdl2.SDL_RENDERER_ACCELERATED | sdl2.SDL_RENDERER_PRESENTVSYNC)
         if not self.ren:
@@ -529,6 +674,19 @@ class Menu:
             if os.path.exists(p):
                 self.font_path = p
                 break
+        if not self.font_path:
+            for rdir in ("/usr/share/fonts", "/usr/local/share/fonts", "/roms/ports/PortMaster", os.path.join(HERE, "launcher")):
+                if not os.path.isdir(rdir):
+                    continue
+                for root, _, files in os.walk(rdir):
+                    for fn in sorted(files):
+                        if fn.lower().endswith((".ttc", ".otf", ".ttf")):
+                            self.font_path = os.path.join(root, fn)
+                            break
+                    if self.font_path:
+                        break
+                if self.font_path:
+                    break
         if not self.font_path:
             raise RuntimeError("no usable font found")
         for i in range(sdl2.SDL_NumJoysticks()):
@@ -945,8 +1103,28 @@ class Menu:
                 return None
         except OSError:
             return None
-        tex = img.IMG_LoadTexture(self.ren, os.fsencode(tp))
-        return tex or None
+        return self._load_image_texture(tp)
+
+    def _load_image_texture(self, path):
+        if img:
+            return img.IMG_LoadTexture(self.ren, os.fsencode(path)) or None
+        if not str(path).lower().endswith(".png"):
+            return None
+        try:
+            w, h, rgba = decode_png_rgba(path)
+        except Exception:
+            return None
+        if not w or not h or not rgba:
+            return None
+        buf = (ctypes.c_ubyte * len(rgba)).from_buffer_copy(rgba)
+        surf = sdl2.SDL_CreateRGBSurfaceWithFormatFrom(
+            buf, w, h, 32, w * 4, sdl2.SDL_PIXELFORMAT_ABGR8888)
+        if not surf:
+            return None
+        try:
+            return sdl2.SDL_CreateTextureFromSurface(self.ren, surf) or None
+        finally:
+            sdl2.SDL_FreeSurface(surf)
 
     def generate(self, g, srcs):
         """Render the covers cropped to 16:9 into a card-sized texture, save it as PNG."""
@@ -963,7 +1141,7 @@ class Menu:
             sdl2.SDL_RenderClear(r)
             drawn = False
             for p in srcs:
-                t = img.IMG_LoadTexture(r, os.fsencode(p))
+                t = self._load_image_texture(p)
                 if not t:
                     continue
                 try:
@@ -989,14 +1167,15 @@ class Menu:
                     try:
                         sdl2.SDL_RenderReadPixels(r, None, fmt, surf.contents.pixels, surf.contents.pitch)
                         sdl2.SDL_SetRenderTarget(r, None)
-                        tp = self.thumb_path(g)
-                        try:
-                            os.makedirs(os.path.dirname(tp), exist_ok=True)
-                            tmp = tp + ".tmp"
-                            if img.IMG_SavePNG(surf, os.fsencode(tmp)) == 0:
-                                os.replace(tmp, tp)
-                        except OSError as e:
-                            sys.stderr.write("thumb save failed: %s\n" % e)
+                        if img:
+                            tp = self.thumb_path(g)
+                            try:
+                                os.makedirs(os.path.dirname(tp), exist_ok=True)
+                                tmp = tp + ".tmp"
+                                if img.IMG_SavePNG(surf, os.fsencode(tmp)) == 0:
+                                    os.replace(tmp, tp)
+                            except OSError as e:
+                                sys.stderr.write("thumb save failed: %s\n" % e)
                         result = sdl2.SDL_CreateTextureFromSurface(r, surf) or None
                     finally:
                         sdl2.SDL_FreeSurface(surf)

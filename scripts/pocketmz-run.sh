@@ -11,6 +11,7 @@
 # playing (~50 MB saved, slower return).
 # And: pocketmz-run.sh --menu - the PocketMZ game menu (used by pocketmz-menu.sh).
 PMZ="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"   # program files (may be read-only)
+[ -f "$PMZ/pocketmz-env.sh" ] && . "$PMZ/pocketmz-env.sh"
 RZ="${POCKETMZ_DATA:-/storage/pocketmz}"                 # data: games, saves, browser profiles
 SRC="${1%/}"; ID="$2"
 MENU=""
@@ -61,6 +62,22 @@ if [ -z "$MENU" ] && [ -z "$POCKETMZ_SMOOTH" ]; then
     true|1|on) export POCKETMZ_SMOOTH=1 ;;
     false|0|off) export POCKETMZ_SMOOTH=0 ;;
   esac
+fi
+
+if [ -z "$MENU" ] && [ -z "$POCKETMZ_COMPAT_MODE" ] && [ -f "$RZ/games/$ID/game/pocketmz.json" ]; then
+  CM=$(grep -o '"compatMode": *[a-z]*' "$RZ/games/$ID/game/pocketmz.json" 2>/dev/null | head -1 | sed 's/.*: *//')
+  [ "$CM" = true ] && POCKETMZ_COMPAT_MODE=1
+fi
+if [ "${POCKETMZ_COMPAT_MODE:-0}" = 1 ]; then
+  export POCKETMZ_COMPAT_MODE=1
+  for _ck in MAP_REFRESH_GUARD CLOSED_WIN_SKIP EMPTY_CHAR_SKIP EMPTY_PIC_SKIP TONEFILTER_FIX WIN_SCALE TILE_ATLAS SKIPBRANCH_CACHE; do
+    eval "[ -z \"\$POCKETMZ_$_ck\" ] && export POCKETMZ_$_ck=off"
+  done
+fi
+
+if [ -z "$MENU" ] && [ -z "$PMZ_SHADER" ] && [ -f "$RZ/games/$ID/game/pocketmz.json" ]; then
+  SH=$(grep -o '"shader": *"[^"]*"' "$RZ/games/$ID/game/pocketmz.json" 2>/dev/null | head -1 | sed 's/.*: *"\([^"]*\)"/\1/')
+  case "$SH" in off|sharp|lcd|crt|cas) export PMZ_SHADER="$SH" ;; esac
 fi
 
 if [ "${POCKETMZ_STOP_ES:-0}" = 1 ] && [ -z "$POCKETMZ_DETACHED" ] && systemctl is-active essway | grep -qE "^(active|activating|reloading)$"; then
@@ -141,29 +158,32 @@ if [ -n "$MENU" ]; then
   # the menu page runs from the data dir (it keeps its state and covers in launcher/library)
   POCKETMZ_GAME="$RZ/launcher"; mkdir -p "$POCKETMZ_GAME/library"
   [ "$PMZ/launcher" -ef "$POCKETMZ_GAME" ] || cp -u "$PMZ/launcher/"*.* "$POCKETMZ_GAME/"
+else
+  # Ensure writable game state dir exists; β uses runtime VFS (no thin copy / symlinks needed),
+  # while NW.js (α) builds the thin copy on demand below.
+  mkdir -p "$POCKETMZ_GAME/${WEB}"
 fi
-# (Re)build the thin copy when missing or when patches changed
-PJS="$POCKETMZ_GAME/${WEB}js/plugins.js"
-DEV_NOW=0; [ -f "$RZ/dev" ] && DEV_NOW=1
-DEV_COPY=0; grep -q '"name":"PocketMZ_Debug"' "$PJS" 2>/dev/null && DEV_COPY=1
-# ... or when the original game's copied files changed (a new version of the game was put over it):
-# size + ctime of every file in data/ js/ css/ and index.html / package.json (ctime also changes
-# when an archive is extracted with old mtimes). Saves, settings and the image cache are kept.
-SRCSIG=""; SIGF="$POCKETMZ_GAME/.pmz-src"
+SRCSIG=""
 [ -z "$MENU" ] && SRCSIG=$(find "$SRC/${WEB}data" "$SRC/${WEB}js" "$SRC/${WEB}css" "$SRC/${WEB}index.html" "$SRC/package.json" \
   -type f -exec stat -c '%s %Z %n' {} + 2>/dev/null | md5sum | cut -c1-32)
-if [ -z "$MENU" ] && { [ ! -f "$POCKETMZ_GAME/${WEB}index.html" ] || [ "$DEV_NOW" != "$DEV_COPY" ] || \
-   [ "$SRCSIG" != "$(cat "$SIGF" 2>/dev/null)" ] || \
-   [ -n "$(find "$PMZ/patches" -newer "$PJS" \( -name 'PocketMZ_*.js' -o -name params.json \) 2>/dev/null)" ]; }; then
-  [ -f "$SIGF" ] && [ "$SRCSIG" != "$(cat "$SIGF")" ] && echo "original game changed: refreshing the copy"
-  "$PMZ/pocketmz-mkgame.sh" "$SRC" "$POCKETMZ_GAME" || { msg "游戏复制失败"; sleep 5; exit 1; }
-  echo "$SRCSIG" > "$SIGF"
-fi
+ensure_thin_copy() {
+  [ -n "$MENU" ] && return 0
+  local pjs="$POCKETMZ_GAME/${WEB}js/plugins.js" sigf="$POCKETMZ_GAME/.pmz-src" dev_now=0 dev_copy=0
+  [ -f "$RZ/dev" ] && dev_now=1
+  grep -q '"name":"PocketMZ_Debug"' "$pjs" 2>/dev/null && dev_copy=1
+  if [ ! -f "$POCKETMZ_GAME/${WEB}index.html" ] || [ "$dev_now" != "$dev_copy" ] || \
+     [ "$SRCSIG" != "$(cat "$sigf" 2>/dev/null)" ] || \
+     [ -n "$(find "$PMZ/patches" -newer "$pjs" \( -name 'PocketMZ_*.js' -o -name params.json \) 2>/dev/null)" ]; then
+    [ -f "$sigf" ] && [ "$SRCSIG" != "$(cat "$sigf")" ] && echo "original game changed: refreshing the copy"
+    "$PMZ/pocketmz-mkgame.sh" "$SRC" "$POCKETMZ_GAME" || { msg "游戏复制失败"; sleep 5; exit 1; }
+    echo "$SRCSIG" > "$sigf"
+  fi
+}
 
 # Saves & backups live on the game card (/storage/roms/savestates/rpgmz/<id>/) so OS reflashes never lose them.
 # Migrate any legacy saves from the thin copy safely, then bind-mount into chroot via POCKETMZ_SAVE_DIR / POCKETMZ_BACKUP_DIR.
 if [ -z "$MENU" ]; then
-  SAVE_ROOT="/storage/roms/savestates/rpgmz/$ID"
+  SAVE_ROOT="${POCKETMZ_SAVE_BASE:-/storage/roms/savestates/rpgmz}/$ID"
   SAVEDIR="$SAVE_ROOT/save"
   BKDIR="$SAVE_ROOT/save-backups"
   mkdir -p "$SAVEDIR" "$BKDIR"
@@ -188,6 +208,18 @@ if [ -z "$MENU" ]; then
     echo "migrated legacy save backups to $BKDIR"
   fi
   export POCKETMZ_SAVE_DIR="$SAVEDIR" POCKETMZ_BACKUP_DIR="$BKDIR" POCKETMZ_WEB="$WEB"
+
+  CACHE_BASE="${POCKETMZ_CACHE_BASE:-${POCKETMZ_SAVE_BASE:-/storage/roms/savestates/rpgmz}/_cache}"
+  CACHEDIR="$CACHE_BASE/$ID"
+  mkdir -p "$CACHEDIR"
+  OLD_CACHE="$POCKETMZ_GAME/${WEB}pmz-cache"
+  if [ -d "$OLD_CACHE" ] && ! grep -q " $OLD_CACHE " /proc/mounts 2>/dev/null && [ -n "$(ls -A "$OLD_CACHE" 2>/dev/null)" ]; then
+    cp -rn "$OLD_CACHE/." "$CACHEDIR/" 2>/dev/null || true
+    rm -rf "$OLD_CACHE"/* 2>/dev/null || true
+    echo "migrated legacy pmz-cache to $CACHEDIR"
+  fi
+  export POCKETMZ_CACHE_DIR="$CACHEDIR"
+  [ -f "$PMZ/pocketmz-cache-trim.py" ] && python3 "$PMZ/pocketmz-cache-trim.py" "$CACHE_BASE" "${POCKETMZ_CACHE_MAX_MB:-512}" 2>/dev/null || true
 
   if [ -d "$SAVEDIR" ] && [ -n "$(ls -A "$SAVEDIR" 2>/dev/null)" ]; then
     LASTBK=$(ls -1d "$BKDIR"/2* 2>/dev/null | tail -1)
@@ -214,19 +246,31 @@ fi
 pmz_cgroup() {
   # Memory cgroup: when the game outgrows it, only the game is OOM-killed
   # (instead of the whole handheld thrashing in swap). Values in MB, override via env.
-  CG=/sys/fs/cgroup/unified/pocketmz
+  CG=""
+  local cg_root=""
+  for _cg in /sys/fs/cgroup/unified /sys/fs/cgroup; do
+    [ -f "$_cg/cgroup.controllers" ] && { cg_root="$_cg"; break; }
+  done
   MEM_MAX="${POCKETMZ_MEM_MAX:-760}" SWAP_MAX="${POCKETMZ_SWAP_MAX:-420}"
   MEM_HIGH="${POCKETMZ_MEM_HIGH:-$MEM_MAX}"   # memory.high below max throttles (slow start)
-  if grep -qw memory /sys/fs/cgroup/unified/cgroup.subtree_control 2>/dev/null || \
-     echo "+memory" > /sys/fs/cgroup/unified/cgroup.subtree_control 2>/dev/null; then
-    [ -d "$CG" ] && [ -z "$(cat "$CG/cgroup.procs")" ] && rmdir "$CG"   # fresh peak/events
+  if [ -z "$cg_root" ]; then
+    echo "cgroup v2 unavailable (kernel $(uname -r)), using /proc/meminfo guard"
+    return 0
+  fi
+  if grep -qw memory "$cg_root/cgroup.subtree_control" 2>/dev/null || \
+     echo "+memory" > "$cg_root/cgroup.subtree_control" 2>/dev/null; then
+    CG="$cg_root/pocketmz"
+    [ -d "$CG" ] && [ -z "$(cat "$CG/cgroup.procs" 2>/dev/null)" ] && rmdir "$CG" 2>/dev/null   # fresh peak/events
     mkdir -p "$CG"
     echo $((MEM_MAX << 20)) > "$CG/memory.max"
-    echo $((MEM_HIGH << 20)) > "$CG/memory.high"
-    echo $((SWAP_MAX << 20)) > "$CG/memory.swap.max"
-    echo 1 > "$CG/memory.oom.group"
-    OOM_BEFORE=$(sed -n 's/^oom_kill //p' "$CG/memory.events")
+    echo $((MEM_HIGH << 20)) > "$CG/memory.high" 2>/dev/null || true
+    echo $((SWAP_MAX << 20)) > "$CG/memory.swap.max" 2>/dev/null || true
+    echo 1 > "$CG/memory.oom.group" 2>/dev/null || true
+    OOM_BEFORE=$(sed -n 's/^oom_kill //p' "$CG/memory.events" 2>/dev/null)
     echo $$ > "$CG/cgroup.procs" && echo "cgroup $CG high=${MEM_HIGH}M max=${MEM_MAX}M swap=${SWAP_MAX}M"
+  else
+    echo "cgroup v2 memory controller unavailable, using /proc/meminfo guard"
+    CG=""
   fi
 }
 HAS_NW=0
@@ -252,7 +296,7 @@ bs_write() {   # <true|false> <reason>
 # handheld keeps working; neither installed -> β is "not installed" below. An explicit PMZ_ROOTDIR in the environment (rt | root24 | root) wins. Only the β branch sets it.
 [ "$RT" != nw ] && export PMZ_ROOTDIR="${PMZ_ROOTDIR:-auto}"
 if [ "$RT" != nw ]; then
-  BVER=$("$RZ/beta/beta-version.sh" 2>/dev/null)
+  BVER=$("$RZ/beta/beta-version.sh")
   if [ ! -x "$RZ/beta/run-pmzrun.sh" ] || [ -z "$BVER" ]; then echo "runtime $RT: β not installed, using NW.js"; RT=nw; fi
 fi
 SET_LANG=$(gset language)
@@ -330,7 +374,8 @@ if [ "$RT" != nw ]; then
   if [ -z "$POCKETMZ_ES_RENDER_SCALE" ]; then
     RS=$(grep -o '"renderScale": *"[a-z0-9.]*"' "$POCKETMZ_GAME/pocketmz.json" 2>/dev/null | head -1 | cut -d'"' -f4); [ -n "$RS" ] && export POCKETMZ_RENDER_SCALE="$RS"
   fi
-  GAME_LOCALE=$(grep -o '"locale" *: *"[^"]*"' "$POCKETMZ_GAME/${WEB}data/System.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
+  GAME_LOCALE=$(grep -o '"locale" *: *"[^"]*"' "$SRC/${WEB}data/System.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
+  [ -z "$GAME_LOCALE" ] && GAME_LOCALE=$(grep -o '"locale" *: *"[^"]*"' "$POCKETMZ_GAME/${WEB}data/System.json" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/')
   GAME_LOCALE="${GAME_LOCALE:-ja_JP}"; export POCKETMZ_LANG="${GAME_LOCALE%%_*}"
   export POCKETMZ_DEFAULT_FPS="${POCKETMZ_DEFAULT_FPS:-30}"
   TZ="${TZ:-$(get_setting system.timezone 2>/dev/null)}"; export TZ="${TZ:-UTC}"
@@ -350,7 +395,7 @@ if [ "$RT" != nw ]; then
   fi
   rm -f "$BFAIL" /tmp/pmz-beta-compat.txt
   if [ -z "$BWHY" ]; then
-    if [ -f "$CG/memory.events" ]; then
+    if [ -n "$CG" ] && [ -f "$CG/memory.events" ]; then
       echo "cgroup peak: $(cat "$CG/memory.peak" 2>/dev/null) events: $(tr '\n' ' ' < "$CG/memory.events")"
       [ "$(sed -n 's/^oom_kill //p' "$CG/memory.events")" != "${OOM_BEFORE:-0}" ] && { msg "内存不足，游戏已退出（请把当前情况告诉开发者）"; sleep 4; }
     fi
@@ -378,6 +423,7 @@ if [ -n "$GPU_DRV" ] && [ "$GPU_DRV" != "panfrost" ]; then
   sleep 5; exit 1
 fi
 export POCKETMZ_RT_NOW=nw   # (only read by the in-game menu)
+ensure_thin_copy
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}"
 export SWAYSOCK="${SWAYSOCK:-$XDG_RUNTIME_DIR/sway-ipc.0.sock}"
@@ -429,20 +475,25 @@ WD_LIMIT="${POCKETMZ_WD_PRESSURE:-50}" WD_SECS="${POCKETMZ_WD_SECS:-15}"
 # below WD_SWAPFREE MB, or the game's own swap above WD_GAMESWAP MB) for WD_LOWSECS seconds
 WD_AVAIL="${POCKETMZ_WD_AVAIL:-150}" WD_SWAPFREE="${POCKETMZ_WD_SWAPFREE:-150}"
 WD_GAMESWAP="${POCKETMZ_WD_GAMESWAP:-$(( SWAP_MAX - 40 ))}" WD_LOWSECS="${POCKETMZ_WD_LOWSECS:-6}"
-if [ "$WD_LIMIT" != off ] && [ -r /proc/pressure/memory ]; then
+if [ "$WD_LIMIT" != off ] && [ -r /proc/meminfo ]; then
+  HAS_PSI=0; [ -r /proc/pressure/memory ] && HAS_PSI=1
+  echo "watchdog started (psi=$HAS_PSI avail=${WD_AVAIL}M swap=${WD_SWAPFREE}M)"
   (
     # outside the game's cgroup, never picked by the OOM killer, scheduled first
-    echo $BASHPID > /sys/fs/cgroup/unified/cgroup.procs 2>/dev/null
+    [ -w /sys/fs/cgroup/unified/cgroup.procs ] && echo $BASHPID > /sys/fs/cgroup/unified/cgroup.procs 2>/dev/null
+    [ -w /sys/fs/cgroup/cgroup.procs ] && echo $BASHPID > /sys/fs/cgroup/cgroup.procs 2>/dev/null
     echo -1000 > /proc/$BASHPID/oom_score_adj 2>/dev/null
     renice -n -15 -p $BASHPID >/dev/null 2>&1
     n=0; nl=0; RUN=$$
     while kill -0 $RUN 2>/dev/null; do
       sleep 2
-      p=$(awk '/^full/ { split($2, a, "="); printf "%d", a[2] }' /proc/pressure/memory)
-      gs=$(( $(cat "$CG/memory.swap.current" 2>/dev/null || echo 0) >> 20 ))
+      p=0
+      [ "$HAS_PSI" = 1 ] && p=$(awk '/^full/ { split($2, a, "="); printf "%d", a[2] }' /proc/pressure/memory 2>/dev/null)
+      gs=0
+      [ -n "$CG" ] && [ -r "$CG/memory.swap.current" ] && gs=$(( $(cat "$CG/memory.swap.current" 2>/dev/null || echo 0) >> 20 ))
       low=$(awk -v av="$WD_AVAIL" -v sf="$WD_SWAPFREE" -v gs="$gs" -v gmax="$WD_GAMESWAP" \
         '/^MemAvailable/ {a=$2} /^SwapFree/ {s=$2} END {print (a < av*1024 && (s < sf*1024 || gs > gmax)) ? 1 : 0}' /proc/meminfo)
-      if [ "${p:-0}" -ge "$WD_LIMIT" ]; then n=$((n + 2)); else n=0; fi
+      if [ "$HAS_PSI" = 1 ] && [ "${p:-0}" -ge "$WD_LIMIT" ]; then n=$((n + 2)); else n=0; fi
       if [ "$low" = 1 ]; then nl=$((nl + 2)); else nl=0; fi
       if { [ $n -ge "$WD_SECS" ] || [ $nl -ge "$WD_LOWSECS" ]; } && pidof nw >/dev/null; then
         echo "watchdog: low memory (full avg10=$p% for ${n}s, low for ${nl}s, game swap ${gs}MB) - ending the game"
@@ -496,7 +547,7 @@ ts "nw exit $?"
 probe_stop
 swap_tune_off
 
-if [ -f "$CG/memory.events" ]; then
+if [ -n "$CG" ] && [ -f "$CG/memory.events" ]; then
   OOM_AFTER=$(sed -n 's/^oom_kill //p' "$CG/memory.events")
   echo "cgroup peak: $(cat "$CG/memory.peak" 2>/dev/null) events: $(tr '\n' ' ' < "$CG/memory.events")"
   [ "${OOM_AFTER:-0}" != "${OOM_BEFORE:-0}" ] && { msg "内存不足，游戏已退出（请把当前情况告诉开发者）"; sleep 4; }

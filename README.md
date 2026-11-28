@@ -202,8 +202,13 @@ python pocketmz-convert.py "D:\Games\MyGame" -o "D:\Converted" --send --host roc
 | `beta/` | 默认无浏览器轻量运行时（`pmzrun.js`、`overlay.js`、原生 C 扩展 `pmzrt/`、打包脚本） |
 | `tools/` | PC 端游戏转换与视频压制工具（`PocketMZ转换器.bat`）、精简依赖交叉编译脚本 |
 | `BUILD.md` | 从零构建与重新打包说明 |
+| `PORTING.md` | 新机型/新固件社区移植指南、分层排查表与 4 步冒烟流程 |
 | `scripts/README.md` | 简明运行手册 |
 | `LICENSE` | MIT 许可证 |
+
+## 新机型移植与问题反馈
+
+- 想将 PocketMZ 移植或反馈到未实机验证的掌机/固件，请先阅读 [PORTING.md](PORTING.md)，并用只读脚本 [scripts/pocketmz-sysinfo.sh](scripts/pocketmz-sysinfo.sh) 采集环境信息，再通过 GitHub 的 Porting Report 模板提交（附 `pocketmz-last.log` 与 `logs/`）。
 
 ---
 
@@ -274,5 +279,9 @@ Use the PC converter before copying games to `roms/rpgmaker/` if a game is **pac
    ```bash
    python pocketmz-convert.py "<game_dir_or_archive>" -o "<out_dir>" --video --video-height 480
    ```
+
+### Porting & Issue Reports
+
+To test or port PocketMZ on a new aarch64 handheld or firmware, see [PORTING.md](PORTING.md) and run the read-only probe [scripts/pocketmz-sysinfo.sh](scripts/pocketmz-sysinfo.sh) before opening a Porting Report issue with your `PocketMZ/logs/`.
 
 **License:** MIT (`LICENSE`). No binaries are committed to this repository.

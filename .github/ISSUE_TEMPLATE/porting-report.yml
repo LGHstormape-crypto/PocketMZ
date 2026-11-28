@@ -1,0 +1,58 @@
+name: Porting Report（新机型/系统移植反馈）
+description: 反馈新掌机型号或新固件系统上的 PocketMZ 兼容性测试结果与日志
+title: "[Porting] <机型 / 系统名称>: <简要现象>"
+labels: ["porting"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢协助适配新机型！提交前请先阅读 [PORTING.md](PORTING.md)，并在掌机上运行 `sh pocketmz-sysinfo.sh /tmp/pocketmz-sysinfo.txt`。
+  - type: input
+    id: device
+    attributes:
+      label: 掌机型号与 SoC / GPU
+      placeholder: 例如：Anbernic RG35XX H (H700 / Mali-G31 MP2) 或 Trimui Smart Pro (A133P / PowerVR)
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: 系统固件与版本 / 包版本
+      placeholder: 例如：muOS 2502 / Knulli / Stock OS，PocketMZ-ports-beta-2026.11.27.zip
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 冒烟测试卡在哪一步？（见 PORTING.md 第四节）
+      options:
+        - 第 1 步：sysinfo 探测或安装解压失败
+        - 第 2 步：Ports 启动器闪退 / 黑屏 / 无文字
+        - 第 3 步：能进选单，但进 PocketMZ Bench 标题或地图失败
+        - 第 4 步：能进游戏，但存在无声 / 按键异常 / 切图崩 / 内存闪退
+        - 全部通过，提交可运行记录
+    validations:
+      required: true
+  - type: textarea
+    id: sysinfo
+    attributes:
+      label: pocketmz-sysinfo.sh 输出
+      description: 请粘贴 `pocketmz-sysinfo.txt` 内容（或上传附件）
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: PocketMZ 日志（pocketmz-last.log / logs/menu.log / logs/last-game-run.log）
+      description: 请粘贴日志正文或拖拽打包压缩上传
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: 已尝试的参数与补充说明
+      placeholder: 例如是否尝试过 PMZ_GLES=2、PMZ_HOST_SDL=1 等
+    validations:
+      required: false

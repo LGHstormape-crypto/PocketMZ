@@ -14,6 +14,7 @@
 #        pocketmz-maint.sh uninstall             pocketmz-uninstall.sh --yes
 # Output: plain lines; the last line is "OK <message>" or "ERROR <message>".
 PMZ="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+[ -f "$PMZ/pocketmz-env.sh" ] && . "$PMZ/pocketmz-env.sh"
 RZ="${POCKETMZ_DATA:-/storage/pocketmz}"
 SAVE_BASE="${POCKETMZ_SAVE_BASE:-/storage/roms/savestates/rpgmz}"
 ok() { echo "OK $*"; exit 0; }

@@ -214,7 +214,10 @@ static void cv_global_init(void) {
   cairo_font_options_set_hint_metrics(g_fo, hm && hm[0] == '0' ? CAIRO_HINT_METRICS_OFF : CAIRO_HINT_METRICS_ON);
   g_fo_m = cairo_font_options_copy(g_fo); cairo_font_options_set_hint_metrics(g_fo_m, CAIRO_HINT_METRICS_OFF);
   { const char *mm = getenv("PMZ_MEASURE"); if (mm && !strcmp(mm, "hinted")) g_measure_frac = 0; }
-  g_lang = pango_language_from_string("ja");
+  const char *lang_env = getenv("PMZ_PANGO_LANG");
+  if (!lang_env || !*lang_env) lang_env = getenv("POCKETMZ_LANG");
+  if (!lang_env || !*lang_env) lang_env = getenv("POCKETMZ_UI_LANG");
+  g_lang = pango_language_from_string((lang_env && *lang_env) ? lang_env : "ja");
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -576,40 +579,50 @@ DEF(cvPutImageData, 10, Cv *c = CV(0); void *p; size_t len; int iw = I(2), ih = 
   })
 
 // ---- GL upload from a canvas: texImageCv(target, level, internalformat, format, type, cv, flipY, premultiply, sub, xoff, yoff) ----
+#define SCRATCH_KEEP_MAX (4u * 1024u * 1024u)
 static uint8_t *g_scratch; static size_t g_scratchCap;
 __attribute__((optimize("O3"))) static void swizzle_row(uint32_t *restrict o, const uint32_t *restrict s, int n) {
   for (int x = 0; x < n; x++) { uint32_t v = s[x]; o[x] = (v & 0xff00ff00u) | ((v >> 16) & 0xffu) | ((v & 0xffu) << 16); }
 }
-static uint8_t *cv_to_rgba(Cv *c, int flip, int premul) {
+static uint8_t *cv_to_rgba(Cv *c, int flip, int premul, int *owned) {
   size_t need = (size_t)c->w * c->h * 4;
-  if (need > g_scratchCap) { free(g_scratch); g_scratch = malloc(need); g_scratchCap = g_scratch ? need : 0; }
-  if (!g_scratch) return NULL;
+  uint8_t *out = NULL;
+  if (need <= SCRATCH_KEEP_MAX) {
+    if (need > g_scratchCap) { free(g_scratch); g_scratch = malloc(need); g_scratchCap = g_scratch ? need : 0; }
+    out = g_scratch;
+    *owned = 0;
+  } else {
+    out = malloc(need);
+    *owned = 1;
+  }
+  if (!out) { *owned = 0; return NULL; }
   cairo_surface_flush(c->surf); const uint8_t *d = cairo_image_surface_get_data(c->surf); int st = cairo_image_surface_get_stride(c->surf);
   if (premul) {   // Cairo's premultiplied ARGB32 is what GL wants after a B<->R swap: one 32-bit op per pixel (vectorised)
     for (int y = 0; y < c->h; y++) {
-      const uint32_t *s = (const uint32_t *)(d + (size_t)(flip ? c->h - 1 - y : y) * st); uint32_t *o = (uint32_t *)(g_scratch + (size_t)y * c->w * 4);
+      const uint32_t *s = (const uint32_t *)(d + (size_t)(flip ? c->h - 1 - y : y) * st); uint32_t *o = (uint32_t *)(out + (size_t)y * c->w * 4);
       swizzle_row(o, s, c->w);
     }
-    return g_scratch;
+    return out;
   }
   for (int y = 0; y < c->h; y++) {
-    const uint32_t *s = (const uint32_t *)(d + (size_t)(flip ? c->h - 1 - y : y) * st); uint8_t *o = g_scratch + (size_t)y * c->w * 4;
+    const uint32_t *s = (const uint32_t *)(d + (size_t)(flip ? c->h - 1 - y : y) * st); uint8_t *o = out + (size_t)y * c->w * 4;
     for (int x = 0; x < c->w; x++, o += 4) {
       uint32_t v = s[x]; unsigned a = v >> 24; unsigned r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
       if (!premul && a && a != 255) { r = (r * 255 + a / 2) / a; g = (g * 255 + a / 2) / a; b = (b * 255 + a / 2) / a; if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255; }
       o[0] = (uint8_t)r; o[1] = (uint8_t)g; o[2] = (uint8_t)b; o[3] = (uint8_t)a;
     }
   }
-  return g_scratch;
+  return out;
 }
 DEF(texImageCv, 11, Cv *c = CV(5); if (c && c->surf && c->w > 0 && c->h > 0) {
-  uint8_t *px = cv_to_rgba(c, B(6), B(7)); int al; glGetIntegerv(GL_UNPACK_ALIGNMENT, &al); glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  int owned = 0; uint8_t *px = cv_to_rgba(c, B(6), B(7), &owned); int al; glGetIntegerv(GL_UNPACK_ALIGNMENT, &al); glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
   if (px) { if (B(8)) glTexSubImage2D(E(0), I(1), I(9), I(10), c->w, c->h, GL_RGBA, GL_UNSIGNED_BYTE, px); else glTexImage2D(E(0), I(1), I(2), c->w, c->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px); }
+  if (owned) free(px);
   glPixelStorei(GL_UNPACK_ALIGNMENT, al); })
 // non-premultiplied RGBA copy as a fresh Uint8Array (used for formats other than RGBA)
 DEFR(cvReadRGBA, 1, Cv *c = CV(0); if (!c || !c->surf || c->w <= 0 || c->h <= 0) return ret_null(env);
-  size_t n = (size_t)c->w * c->h * 4; uint8_t *px = cv_to_rgba(c, 0, 0); if (!px) return ret_null(env);
-  void *buf; napi_value ab, ta; napi_create_arraybuffer(env, n, &buf, &ab); memcpy(buf, px, n); napi_create_typedarray(env, napi_uint8_array, n, ab, 0, &ta); return ta;)
+  int owned = 0; size_t n = (size_t)c->w * c->h * 4; uint8_t *px = cv_to_rgba(c, 0, 0, &owned); if (!px) return ret_null(env);
+  void *buf; napi_value ab, ta; napi_create_arraybuffer(env, n, &buf, &ab); memcpy(buf, px, n); if (owned) free(px); napi_create_typedarray(env, napi_uint8_array, n, ab, 0, &ta); return ta;)
 
 // ---- PNG encode of a canvas ----
 typedef struct { uint8_t *d; size_t n, cap; } Grow;

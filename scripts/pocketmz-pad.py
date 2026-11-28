@@ -24,6 +24,9 @@ ES_INPUT_CANDIDATES = (
 SYS_GCDB_CANDIDATES = (
     "/storage/.config/SDL-GameControllerDB/gamecontrollerdb.txt",
     "/usr/config/SDL-GameControllerDB/gamecontrollerdb.txt",
+    "/roms/ports/PortMaster/gamecontrollerdb.txt",
+    "/opt/system/Tools/PortMaster/gamecontrollerdb.txt",
+    "/mnt/mmc/Roms/PORTS/PortMaster/gamecontrollerdb.txt",
 )
 OUT_DB = os.environ.get("PMZ_PAD_DB") or "/tmp/pmz-gamecontrollerdb.txt"
 

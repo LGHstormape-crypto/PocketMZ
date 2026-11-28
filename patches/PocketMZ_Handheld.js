@@ -47,12 +47,23 @@
     // Written against RPG Maker MZ 1.x internals; MV games get PocketMZ_HandheldMV.js instead.
     if (!window.Utils || Utils.RPGMAKER_NAME !== "MZ") return;
 
+    if (window.process && process.env && process.env.POCKETMZ_COMPAT_MODE === "1") {
+        for (const k of [
+            "POCKETMZ_MAP_REFRESH_GUARD", "POCKETMZ_CLOSED_WIN_SKIP", "POCKETMZ_EMPTY_CHAR_SKIP",
+            "POCKETMZ_EMPTY_PIC_SKIP", "POCKETMZ_TONEFILTER_FIX", "POCKETMZ_WIN_SCALE",
+            "POCKETMZ_TILE_ATLAS", "POCKETMZ_SKIPBRANCH_CACHE"
+        ]) {
+            if (!process.env[k]) process.env[k] = "off";
+        }
+    }
+
     const IMAGE_BUDGET_PX = 16 * 1024 * 1024; // ~64 MB of RGBA (protected map images not counted out)
     const TEXTURE_GC_MAX_IDLE = 900;          // frames (~15 s), PIXI default 3600
     const AUDIO_SAMPLE_RATE = 24000;          // 0 = browser default
 
     // 1. Window
     Scene_Boot.prototype.adjustWindow = function() {};
+// --- module: patches/src/common/viewport-stretch.js ---
     // No page scrollbars: the game is one canvas sized to the screen, but other elements sized
     // for a PC window (e.g. an error screen plugin's 1152 px error box) overflow the 640x480
     // screen and the browser shows scrollbars over the game.
@@ -76,7 +87,7 @@
     // Start sends Escape again (cancel / menu); quitting is F2 + Start (pocketmz-hotkeys.py ->
     // PocketMZ_Menu.js). End stays an alias of Escape for button maps made while Start sent End.
     if (window.Input && Input.keyMapper) Input.keyMapper[35] = "escape";
-
+// --- module: patches/src/handheld-mz/10-input-cache.js ---
     // 2. Input
     Input._updateGamepadState = function() {};
 
@@ -203,7 +214,7 @@
         get() { return this._gkdEnabled !== false && !(this.uniforms && isNeutral(this.uniforms)); },
         set(value) { this._gkdEnabled = value; }
     });
-
+// --- module: patches/src/handheld-mz/20-render-windows.js ---
     // 8. Frame rate option
     const FPS_KEY = "gkdFrameRate";
     const fpsLabel = () => {   // option text in the game's language
@@ -771,7 +782,7 @@
             };
         }
     }
-
+// --- module: patches/src/handheld-mz/30-img-scale.js ---
     // 17. Large images kept at screen resolution. A 1920x1080 game shown on the 640x480 screen
     //     never draws a picture at more than 1/3 of its pixels, but MZ keeps every loaded image
     //     at full size (decoded + uploaded: GPU memory is system RAM here). Layered stand-up
@@ -1333,7 +1344,7 @@
             PMZ_IMG.unscaleWindow = unscale;
         }
     }
-
+// --- module: patches/src/common/gc-scheduler.js ---
     // 18. Full GC after scene changes and when memory runs low. Dropped canvases, images and decoded
     //     audio (WebAudio buffers: 20-50 MB per BGM at 24 kHz) live outside the small JS heap, so V8
     //     rarely collects their owners on its own: in an MZ game decoded audio grew to 153 MB and
@@ -1366,51 +1377,79 @@
             } catch (e) { /* no /proc */ }
         }, 15000);
     }
-
-    // 19. Decoded sound effects reused. MZ fetches and decodes an SE file again for every playSe (a new
-    //     WebAudio each time); footstep plugins play one per step: up to 3.7 s of decoding next to
-    //     the game and a new PCM buffer per step (decoded audio reached 95 MB within 2 minutes in a
-    //     game with two footstep plugins). Short SE files (audio/se/, <= 10 s) are decoded once and
-    //     their AudioBuffer is shared by later plays (24 MB, least recently used out).
-    //     POCKETMZ_SE_CACHE=off disables it.
-    if (window.WebAudio && WebAudio.prototype._startLoading && WebAudio.prototype._onDecode &&
+// --- module: patches/src/common/se-cache.js ---
+    // Decoded sound effects reused (24 MB LRU for audio/se/ <= 10 s).
+    // Supports both MZ (_startLoading/_onDecode) and MV (_load/_onLoad); POCKETMZ_SE_CACHE=off disables it.
+    if (window.WebAudio &&
         String((window.process && process.env && process.env.POCKETMZ_SE_CACHE) || "on") !== "off") {
         const W = WebAudio.prototype;
         const SE = new Map(), SE_MAX = 24 << 20;
         const PMZ_SE = window.PMZ_SE = { hits: 0, stored: 0, bytes: 0, size: () => SE.size };
         const isSe = url => /(^|\/)audio\/se\//.test(String(url || ""));
         const bytesOf = b => b.length * b.numberOfChannels * 4;
-        const _startLoading = W._startLoading;
-        W._startLoading = function() {
-            const hit = isSe(this._url) && SE.get(this._url);
-            if (!hit || !WebAudio._context) return _startLoading.apply(this, arguments);
-            SE.delete(this._url); SE.set(this._url, hit);   // most recently used last
-            this._isError = false;
-            this._isLoaded = true;
-            this._sampleRate = hit.sampleRate; this._loopStart = hit.loopStart; this._loopLength = hit.loopLength;
-            this._lastUpdateTime = WebAudio._currentTime() - 0.5;
-            PMZ_SE.hits++;
-            // asynchronous like a real decode: load listeners added right after new WebAudio() still run
-            Promise.resolve().then(() => {
-                if (this._url === hit.url && this._buffers && !this._buffers.length) this._onDecode(hit.buffer);
-            });
-        };
-        const _onDecode = W._onDecode;
-        W._onDecode = function(buffer) {
-            if (buffer && this._isLoaded && isSe(this._url) && !this._shouldUseDecoder() &&
-                buffer.duration <= 10 && !SE.has(this._url)) {
-                SE.set(this._url, { url: this._url, buffer, sampleRate: this._sampleRate,
-                                    loopStart: this._loopStart, loopLength: this._loopLength });
-                PMZ_SE.bytes += bytesOf(buffer); PMZ_SE.stored++;
-                for (const [k, v] of SE) {
-                    if (PMZ_SE.bytes <= SE_MAX) break;
-                    SE.delete(k); PMZ_SE.bytes -= bytesOf(v.buffer);
-                }
+        const evictSe = () => {
+            for (const [k, v] of SE) {
+                if (PMZ_SE.bytes <= SE_MAX) break;
+                SE.delete(k); PMZ_SE.bytes -= bytesOf(v.buffer);
             }
-            return _onDecode.apply(this, arguments);
         };
+        if (W._startLoading && W._onDecode) {
+            const _startLoading = W._startLoading;
+            W._startLoading = function() {
+                const hit = isSe(this._url) && SE.get(this._url);
+                if (!hit || !WebAudio._context) return _startLoading.apply(this, arguments);
+                SE.delete(this._url); SE.set(this._url, hit);
+                this._isError = false;
+                this._isLoaded = true;
+                this._sampleRate = hit.sampleRate; this._loopStart = hit.loopStart; this._loopLength = hit.loopLength;
+                this._lastUpdateTime = WebAudio._currentTime() - 0.5;
+                PMZ_SE.hits++;
+                Promise.resolve().then(() => {
+                    if (this._url === hit.url && this._buffers && !this._buffers.length) this._onDecode(hit.buffer);
+                });
+            };
+            const _onDecode = W._onDecode;
+            W._onDecode = function(buffer) {
+                if (buffer && this._isLoaded && isSe(this._url) && !this._shouldUseDecoder() &&
+                    buffer.duration <= 10 && !SE.has(this._url)) {
+                    SE.set(this._url, { url: this._url, buffer, sampleRate: this._sampleRate,
+                                        loopStart: this._loopStart, loopLength: this._loopLength });
+                    PMZ_SE.bytes += bytesOf(buffer); PMZ_SE.stored++;
+                    evictSe();
+                }
+                return _onDecode.apply(this, arguments);
+            };
+        } else if (W._load && W._onLoad) {
+            const _load = W._load;
+            W._load = function(url) {
+                const hit = isSe(this._url) && SE.get(this._url);
+                if (!hit || !WebAudio._context) return _load.apply(this, arguments);
+                SE.delete(this._url); SE.set(this._url, hit);
+                PMZ_SE.hits++;
+                Promise.resolve().then(() => {
+                    if (this._url !== hit.url || this._buffer) return;
+                    this._buffer = hit.buffer;
+                    this._totalTime = hit.totalTime;
+                    this._sampleRate = hit.sampleRate;
+                    this._loopStart = hit.loopStart;
+                    this._loopLength = hit.loopLength;
+                    this._onLoad();
+                });
+            };
+            const _onLoad = W._onLoad;
+            W._onLoad = function() {
+                const b = this._buffer;
+                if (b && isSe(this._url) && b.duration <= 10 && !SE.has(this._url)) {
+                    SE.set(this._url, { url: this._url, buffer: b, totalTime: this._totalTime, sampleRate: this._sampleRate,
+                                        loopStart: this._loopStart, loopLength: this._loopLength });
+                    PMZ_SE.bytes += bytesOf(b); PMZ_SE.stored++;
+                    evictSe();
+                }
+                return _onLoad.apply(this, arguments);
+            };
+        }
     }
-
+// --- module: patches/src/common/map-json-cache.js ---
     // 20. The current map's JSON text kept. Scene_Map#create loads the map file again every time
     //     the map scene comes back (after the menu, a battle, a shop): a 2 MB map with 137 events
     //     took 250-540 ms to read in an MV game (1.5 s cold) before parsing. The text of the last
@@ -1450,7 +1489,7 @@
             try { return _loadDataFile.apply(this, arguments); } finally { XMLHttpRequest.prototype.send = _send; }
         };
     }
-
+// --- module: patches/src/handheld-mz/40-map-tilemap-audio.js ---
     // 21. Images of the previous map kept across a map transfer. Scene_Map#onTransfer calls
     //     ImageManager.clear(), which destroys every cached bitmap; moving between two maps with the
     //     same tileset then loads and decodes all 9 tileset images and the character sheets again:
@@ -1812,7 +1851,7 @@
         if (smEnv === "1" || smEnv === "true" || smEnv === "on") window.PMZ_applySmooth(true);
         else if (smEnv === "0" || smEnv === "false" || smEnv === "off") window.PMZ_applySmooth(false);
     }
-
+// --- module: patches/src/common/skip-branch.js ---
     // 25. Game_Interpreter.skipBranch jump table (avoid linear re-scan of long event lists)
     if (String((window.process && process.env && process.env.POCKETMZ_SKIPBRANCH_CACHE) || "on").toLowerCase() !== "off" &&
         window.Game_Interpreter && Game_Interpreter.prototype.skipBranch &&
@@ -1843,7 +1882,7 @@
             Game_Interpreter.prototype.skipBranch = wrapped;
         }
     }
-
+// --- module: patches/src/handheld-mz/50-loadimg-battle.js ---
     // 26. Game_Interpreter.loadImages deduplication per map/cache generation
     if (String((window.process && process.env && process.env.POCKETMZ_LOADIMG_CACHE) || "on").toLowerCase() !== "off" &&
         window.Game_Interpreter && Game_Interpreter.prototype.loadImages &&

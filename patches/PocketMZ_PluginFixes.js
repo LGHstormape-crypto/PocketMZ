@@ -20,7 +20,7 @@
     "use strict";
 
     const hasPlugin = name => $plugins.some(p => p.name === name && p.status);
-
+// --- module: patches/src/fixes/01-picture-color-change.js ---
     // ---- PictureColorChange (MV; picture hue / tint) ---------------------------
     //   Its Sprite_Picture#updateBitmap copies every newly shown picture into a new
     //   canvas Bitmap (so the cached image is never tinted in place), even when the
@@ -90,7 +90,7 @@
             }
         };
     }
-
+// --- module: patches/src/fixes/02-filter-selectable-items.js ---
     // ---- FilterSelectableItems (game data bug, same on PC) --------------------
     //   "SetSelectableItems" restricts the Select Item window to a list of item IDs.
     //   2 of its 71 uses in this game have an empty list (e.g. map 118 EV002, the
@@ -110,7 +110,7 @@
             };
         }
     }
-
+// --- module: patches/src/fixes/03-artm-player-sensor.js ---
     // ---- ARTM_PlayerSensorMZ -------------------------------------------------
     if (hasPlugin("ARTM_PlayerSensorMZ") && Game_CharacterBase.prototype.isMapPassableEx) {
         const P = PluginManager.parameters("ARTM_PlayerSensorMZ");
@@ -286,7 +286,7 @@
             }
         }
     }
-
+// --- module: patches/src/fixes/04-character-picture-manager.js ---
     // ---- CharacterPictureManager (triacontane, stand pictures) -----------------
     //   Every frame, for every picture layer of every shown actor, the plugin copies and
     //   reverses the layer's file list and tests each file with 10 new closures, one of
@@ -414,7 +414,7 @@
             }
         };
     }
-
+// --- module: patches/src/fixes/05-panda-resource-preload.js ---
     // ---- PANDA_ResourcePreLoad (MZ; preloads the audio of every event) --------
     //   Its Game_Interpreter#loadImages calls AudioManager.preloadAudio for every BGM / BGS /
     //   ME / SE an event mentions, and preloadAudio keeps each WebAudio (decoded PCM) in
@@ -437,7 +437,7 @@
             buffer.addLoadListener(() => buffer.destroy());    // the cache keeps the decoded PCM
         };
     }
-
+// --- module: patches/src/fixes/06-apng-picture.js ---
     // ---- ApngPicture / PixiApngAndGif (MZ; startup pre-decode OOM & canvas bloat) -
     //   1) CachePolicy=2 decodes every registered APNG at Scene_Boot (e.g. 31 files,
     //      795 frames, 485 MB raw RGBA -> >740 MB with per-frame <canvas> -> OOM).
@@ -867,7 +867,7 @@
             };
         }
     }
-
+// --- module: patches/src/fixes/07-nuun-state-icons.js ---
     // ---- NUUN_StateTurn + NUUN_StateIconSideBySide (14.88 MB IconSet clones) -
     //   NUUN_StateTurn.js:275 allocates `new Bitmap(this.bitmap.width, this.bitmap.height)`
     //   for `textSprite` even though updateFrame() only draws a 1-digit turn number inside
@@ -919,7 +919,7 @@
             return origStateIconUpdateFrame.apply(this, arguments);
         };
     }
-
+// --- module: patches/src/fixes/08-plugin-common-base.js ---
     // ---- PluginCommonBase (per-frame getter regex churn) -----------------------
     //   PluginParam accessors call PluginManagerEx.convertVariables() on every read
     //   (e.g. ApngPicture Sprite.update reading param.FrameCount, PhantomEvent reading
@@ -975,7 +975,7 @@
             };
         }
     }
-
+// --- module: patches/src/fixes/09-passive-skill.js ---
     // ---- PassiveSkill (Game_Actor.enableSkills O(N^2) concat churn) ----------
     //   PassiveSkill.js:624 runs `this._enableSkills.reduce((r, id) => r.concat([$dataSkills[id]]), [])`
     //   on every Game_Actor.traitObjects() call. Cache the resolved array between refreshes.
@@ -991,7 +991,7 @@
             return this._pmzSkillObjs.slice();
         };
     }
-
+// --- module: patches/src/fixes/10-phantom-event.js ---
     // ---- PhantomEvent (per-frame party trait scan for every phantom event) ---
     //   Map events with <VisibleDistance> call $gameParty.findVisibleDistanceRate()
     //   for every event on every frame, re-scanning actor.traitObjects() + meta tags.
@@ -1006,7 +1006,7 @@
             return v;
         };
     }
-
+// --- module: patches/src/fixes/11-ll-variable-window.js ---
     // ---- LL_VariableWindowMV / MV2 / MV3 (MV: avoid 4x full-screen Window bitmaps on Scene_Map) ----
     if (Utils.RPGMAKER_NAME === "MV" &&
         String((window.process && process.env && process.env.POCKETMZ_LLVAR_FIX) || "on").toLowerCase() !== "off" &&
@@ -1024,7 +1024,7 @@
         wrappedLlWbInit._pmzLlVarFix = true;
         Window_Base.prototype.initialize = wrappedLlWbInit;
     }
-
+// --- module: patches/src/fixes/12-tm-name-pop.js ---
     // ---- TMNamePop (MV: per-map Bitmap cache + off-screen skip for Sprite_NamePop) ----
     if (Utils.RPGMAKER_NAME === "MV" &&
         String((window.process && process.env && process.env.POCKETMZ_NAMEPOP_FIX) || "on").toLowerCase() !== "off" &&
@@ -1088,7 +1088,7 @@
         wrappedUpdateNp._pmzNpFix = true;
         Sprite_Character.prototype.updateNamePop = wrappedUpdateNp;
     }
-
+// --- module: patches/src/fixes/13-111-input-form.js ---
     // ---- 111_InputForm (MV on β: bridge HTML <input> form to native gamepad Scene_Name) ----
     if (Utils.RPGMAKER_NAME === "MV" &&
         String((window.process && process.env && process.env.POCKETMZ_INPUTFORM_FIX) || "on").toLowerCase() !== "off" &&
@@ -1236,7 +1236,7 @@
             };
         }
     }
-
+// --- module: patches/src/fixes/14-ftkr-ex-message-window2.js ---
     // ---- FTKR_ExMessageWindow2 (MV: skip closed-idle Window_MessageEx updates) ----
     if (Utils.RPGMAKER_NAME === "MV" &&
         String((window.process && process.env && process.env.POCKETMZ_FTKR_MSG_FIX) || "on").toLowerCase() !== "off" &&
@@ -1255,7 +1255,7 @@
         wrappedWmExUpdate._pmzFtkrSkip = true;
         Window_MessageEx.prototype.update = wrappedWmExUpdate;
     }
-
+// --- module: patches/src/fixes/15-dtext-picture.js ---
     // ---- DTextPicture (MV: deterministic key + LRU Bitmap cache + Cairo canvas release) ----
     if (Utils.RPGMAKER_NAME === "MV" &&
         String((window.process && process.env && process.env.POCKETMZ_DTEXT_FIX) || "on").toLowerCase() !== "off" &&
@@ -1361,5 +1361,98 @@
                 return r;
             };
         }
+    }
+// --- module: patches/src/fixes/16-generic-ime.js ---
+    // ---- Generic <input>/<textarea> IME bridge -> native gamepad Scene_Name ----
+    if (String((window.process && process.env && process.env.POCKETMZ_GENERIC_IME) || "on").toLowerCase() !== "off" &&
+        window.SceneManager && window.Scene_Name && window.$gameActors) {
+        let pendingIme = null;
+        if (!Scene_Name.prototype._pmzImeWrapped) {
+            Scene_Name.prototype._pmzImeWrapped = true;
+            const _snCreate = Scene_Name.prototype.create;
+            Scene_Name.prototype.create = function() {
+                if (!pendingIme) return _snCreate.apply(this, arguments);
+                const dummyActor = {
+                    actorId: () => 0, faceName: () => "", faceIndex: () => 0,
+                    name: () => pendingIme.val, setName: s => { pendingIme.val = String(s || ""); }
+                };
+                const _gaActor = $gameActors.actor;
+                $gameActors.actor = function(id) { return id === 0 ? dummyActor : _gaActor.apply(this, arguments); };
+                try { return _snCreate.apply(this, arguments); }
+                finally { $gameActors.actor = _gaActor; }
+            };
+            const _snOnOk = Scene_Name.prototype.onInputOk;
+            Scene_Name.prototype.onInputOk = function() {
+                if (!pendingIme) return _snOnOk.apply(this, arguments);
+                const cur = pendingIme;
+                pendingIme = null;
+                const name = this._editWindow ? this._editWindow.name() : cur.val;
+                cur.el.value = name;
+                const dispatch = (type, extra) => {
+                    if (typeof cur.el.dispatchEvent === "function") {
+                        cur.el.dispatchEvent(Object.assign({ type, target: cur.el, currentTarget: cur.el }, extra));
+                    }
+                };
+                dispatch("input", {});
+                dispatch("change", {});
+                dispatch("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13 });
+                this.popScene();
+                if (typeof cur.el.blur === "function") cur.el.blur();
+            };
+            const _snTerm = Scene_Name.prototype.terminate;
+            Scene_Name.prototype.terminate = function() {
+                if (pendingIme) {
+                    const cur = pendingIme;
+                    pendingIme = null;
+                    if (typeof cur.el.blur === "function") cur.el.blur();
+                }
+                return _snTerm.apply(this, arguments);
+            };
+            if (window.Window_NameEdit && window.Window_NameInput) {
+                const compact = () => !!pendingIme && window.Graphics && Graphics.boxHeight < 560;
+                const WNE = Window_NameEdit.prototype;
+                const _wneInit = WNE.initialize, _wneWh = WNE.windowHeight, _wneFw = WNE.faceWidth;
+                const _wnePad = WNE.standardPadding, _wneLh = WNE.lineHeight, _wneIr = WNE.itemRect;
+                WNE.windowHeight = function() { return compact() ? 64 : _wneWh.call(this); };
+                WNE.faceWidth = function() { return compact() ? 0 : _wneFw.call(this); };
+                WNE.standardPadding = function() { return compact() ? 10 : _wnePad.call(this); };
+                WNE.lineHeight = function() { return compact() ? 28 : _wneLh.call(this); };
+                WNE.initialize = function() {
+                    const r = _wneInit.apply(this, arguments);
+                    if (compact()) { this.y = 8; this.refresh(); }
+                    return r;
+                };
+                WNE.itemRect = function(index) {
+                    const r = _wneIr.call(this, index);
+                    if (compact()) r.y = Math.max(0, Math.floor((this.contentsHeight() - r.height) / 2));
+                    return r;
+                };
+                const WNI = Window_NameInput.prototype;
+                const _wniInit = WNI.initialize, _wniPad = WNI.standardPadding;
+                const _wniFs = WNI.standardFontSize, _wniLh = WNI.lineHeight;
+                WNI.standardPadding = function() { return compact() ? 10 : _wniPad.call(this); };
+                WNI.standardFontSize = function() { return compact() ? 20 : _wniFs.call(this); };
+                WNI.lineHeight = function() { return compact() ? Math.max(24, Math.floor((Graphics.boxHeight - 104) / 9)) : _wniLh.call(this); };
+                WNI.initialize = function(editWindow) {
+                    const r = _wniInit.apply(this, arguments);
+                    if (compact() && editWindow) {
+                        this.y = editWindow.y + editWindow.height + 6;
+                        this.refresh();
+                        this.updateCursor();
+                    }
+                    return r;
+                };
+            }
+        }
+        window.__pmzOpenIme = function(el) {
+            if (!el || !window.SceneManager || !window.Scene_Name || !window.$gameActors) return false;
+            if (pendingIme || SceneManager._scene instanceof Scene_Name) return false;
+            const initVal = String(el.value || "");
+            const maxLen = el.maxLength > 0 ? Math.min(32, Math.max(1, Number(el.maxLength))) : 16;
+            pendingIme = { el, val: initVal };
+            SceneManager.push(Scene_Name);
+            SceneManager.prepareNextScene(0, maxLen);
+            return true;
+        };
     }
 })();

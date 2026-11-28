@@ -24,7 +24,8 @@ fi
 # ---------------------------------------------------------------- device side
 [ -n "$(pidof nw)$(pidof node)" ] && { echo "a game (nw/node) is running, abort"; exit 1; }
 DATE=$(date +%Y%m%d); OUT=$RZ/beta-runtime-$DATE.sqfs; A=$RZ/root-sqfs; ST=$W/stage
-COMP="${BETA_IMG_COMP:--comp zstd -Xcompression-level 19 -b 256K}"
+# gzip is required for Linux <4.14 kernels (e.g. Anbernic H700 Stock OS 4.9.170 lacks zstd squashfs)
+COMP="${BETA_IMG_COMP:--comp gzip -b 131072}"
 [ -f $RZ/rootfs.sqfs ] || { echo "no $RZ/rootfs.sqfs (the image is built against it)"; exit 1; }
 grep -q " $A " /proc/mounts || mount -t squashfs -o loop,ro $RZ/rootfs.sqfs $A || exit 1
 R=$($B/beta-mount.sh root24) || { echo "root24 not mounted"; exit 1; }

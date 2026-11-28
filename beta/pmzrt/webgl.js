@@ -91,7 +91,7 @@ const P_FLOAT1 = new Set([GL.LINE_WIDTH, GL.DEPTH_CLEAR_VALUE, GL.POLYGON_OFFSET
 const P_BOOL = new Set([GL.BLEND, GL.CULL_FACE, GL.DEPTH_TEST, GL.DEPTH_WRITEMASK, GL.DITHER, GL.POLYGON_OFFSET_FILL,
   GL.SAMPLE_ALPHA_TO_COVERAGE, GL.SAMPLE_COVERAGE, GL.SAMPLE_COVERAGE_INVERT, GL.SCISSOR_TEST, GL.STENCIL_TEST]);
 
-class WebGLObject { constructor(id) { this._id = id; this._deleted = false; this._gc = null; } }
+class WebGLObject { constructor(id) { this._id = id; this._deleted = false; this._gc = null; this._memBytes = 0; this._extReported = 0; } }
 class WebGLBuffer extends WebGLObject {}
 class WebGLTexture extends WebGLObject {}
 class WebGLProgram extends WebGLObject { constructor(id) { super(id); this._shaders = new Set(); } }
@@ -123,6 +123,7 @@ class WebGLRenderingContext {
       preserveDrawingBuffer: false, powerPreference: 'default', failIfMajorPerformanceCaveat: false, desynchronized: false }, attrs || {});
     this._flipY = false; this._premul = false;
     this._fb = null;                                    // currently bound WebGLFramebuffer (null = default/window)
+    this._defaultFboId = 0;                             // 0 = window, >0 = postproc offscreen FBO
     this._defaultFbDirty = false;                       // true once this frame draws/clears the default framebuffer (skip swap on untouched frames)
     this._vp = [0, 0, canvas.width, canvas.height];     // viewport/scissor as the game sees them (canvas coordinates)
     this._sc = [0, 0, canvas.width, canvas.height];
@@ -132,9 +133,15 @@ class WebGLRenderingContext {
     this._defVao = { _eb: null, _attribs: [] };
     this._bound = { ab: null, tex2d: new Array(32).fill(null), texCube: new Array(32).fill(null), rb: null, prog: null, vao: null };
     this._gcStats = { buf: 0, tex: 0, fb: 0, rb: 0, prog: 0, shader: 0, vao: 0 };
+    this._glMemBytes = 0;
+    this._glMemWeight = (opts.glMemWeight !== undefined && Number.isFinite(Number(opts.glMemWeight))) ? Math.max(0, Number(opts.glMemWeight)) : 0.5;
     this._fr = typeof FinalizationRegistry === 'function' ? new FinalizationRegistry(tok => {
       if (tok.deleted) return;
       tok.deleted = true;
+      if (tok.memBytes) this._glMemBytes -= tok.memBytes;
+      if (tok.extReported && typeof this._pmz.adjustExternalMemory === 'function') {
+        try { this._pmz.adjustExternalMemory(-tok.extReported); } catch (e) {}
+      }
       if (tok.reg && this._reg[tok.reg]) {
         const wr = this._reg[tok.reg].get(tok.id);
         if (!wr || !wr.deref()) this._reg[tok.reg].delete(tok.id);
@@ -180,11 +187,57 @@ class WebGLRenderingContext {
   _track(o, reg, fn, stat) {
     if (reg) this._reg[reg].set(o._id, new WeakRef(o));
     if (this._fr) {
-      const tok = { id: o._id, reg, fn, stat, deleted: false };
+      const tok = { id: o._id, reg, fn, stat, deleted: false, memBytes: 0, extReported: 0 };
       o._gc = tok;
       this._fr.register(o, tok, o);
     }
     return o;
+  }
+  _setObjMem(obj, newBytes) {
+    if (!obj) return;
+    const prev = obj._memBytes || 0;
+    const next = Math.max(0, Math.floor(Number(newBytes) || 0));
+    const delta = next - prev;
+    if (delta !== 0) {
+      obj._memBytes = next;
+      this._glMemBytes += delta;
+      if (obj._gc) obj._gc.memBytes = next;
+    }
+    if (this._glMemWeight > 0 && typeof this._pmz.adjustExternalMemory === 'function') {
+      const targetExt = Math.round(next * this._glMemWeight);
+      const prevExt = obj._extReported || 0;
+      const extDelta = targetExt - prevExt;
+      if (extDelta !== 0) {
+        obj._extReported = targetExt;
+        if (obj._gc) obj._gc.extReported = targetExt;
+        this._pmz.adjustExternalMemory(extDelta);
+      }
+    }
+  }
+  _texBpp(format, type) {
+    if (type === GL.UNSIGNED_SHORT_5_6_5 || type === GL.UNSIGNED_SHORT_4_4_4_4 || type === GL.UNSIGNED_SHORT_5_5_5_1) return 2;
+    const ch = format === GL.RGB ? 3 : format === GL.LUMINANCE_ALPHA ? 2 : (format === GL.ALPHA || format === GL.LUMINANCE || format === GL.DEPTH_COMPONENT) ? 1 : 4;
+    return type === GL.FLOAT ? ch * 4 : ch;
+  }
+  _rbBpp(fmt) {
+    if (fmt === GL.RGBA4 || fmt === GL.RGB5_A1 || fmt === GL.RGB565 || fmt === GL.DEPTH_COMPONENT16) return 2;
+    if (fmt === GL.STENCIL_INDEX8) return 1;
+    return 4;
+  }
+  _recordTexMem(target, level, w, h, format, type) {
+    if (level !== 0) return;
+    const tex = target === GL.TEXTURE_2D ? this._bound.tex2d[this._activeUnit] : this._bound.texCube[this._activeUnit];
+    if (!tex || tex._deleted) return;
+    const bytes = Math.max(0, w | 0) * Math.max(0, h | 0) * this._texBpp(format, type);
+    if (target === GL.TEXTURE_2D) {
+      this._setObjMem(tex, bytes);
+    } else {
+      if (!tex._faceMem) tex._faceMem = new Map();
+      tex._faceMem.set(target, bytes);
+      let sum = 0;
+      for (const v of tex._faceMem.values()) sum += v;
+      this._setObjMem(tex, sum);
+    }
   }
   _untrack(o, reg) {
     o._deleted = true;
@@ -214,12 +267,12 @@ class WebGLRenderingContext {
     const x0 = Math.round(ox + x * s), y0 = Math.round(oy + y * s), x1 = Math.round(ox + (x + w) * s), y1 = Math.round(oy + (y + h) * s);
     return [x0, y0, x1 - x0, y1 - y0];
   }
-  _applyViewport() { const v = this._vp, p = this._pmz; if (this._fb) p.viewport(v[0], v[1], v[2], v[3]); else { const m = this._map(v[0], v[1], v[2], v[3]); p.viewport(m[0], m[1], m[2], m[3]); } }
-  _applyScissor() { const v = this._sc, p = this._pmz; if (this._fb) p.scissor(v[0], v[1], v[2], v[3]); else { const m = this._map(v[0], v[1], v[2], v[3]); p.scissor(m[0], m[1], m[2], m[3]); } }
+  _applyViewport() { const v = this._vp, p = this._pmz; if (this._fb || this._defaultFboId) p.viewport(v[0], v[1], v[2], v[3]); else { const m = this._map(v[0], v[1], v[2], v[3]); p.viewport(m[0], m[1], m[2], m[3]); } }
+  _applyScissor() { const v = this._sc, p = this._pmz; if (this._fb || this._defaultFboId) p.scissor(v[0], v[1], v[2], v[3]); else { const m = this._map(v[0], v[1], v[2], v[3]); p.scissor(m[0], m[1], m[2], m[3]); } }
   viewport(x, y, w, h) { this._vp = [x, y, w, h]; this._applyViewport(); }
   scissor(x, y, w, h) { this._sc = [x, y, w, h]; this._applyScissor(); }
   bindFramebuffer(t, fb) {
-    const was = !!this._fb; this._fb = fb || null; this._pmz.bindFramebuffer(t, id(fb));
+    const was = !!this._fb; this._fb = fb || null; this._pmz.bindFramebuffer(t, fb ? fb._id : this._defaultFboId);
     // PIXI skips viewport/scissor calls it believes are unchanged: re-issue them when switching between window and offscreen
     if (was !== !!this._fb) { this._applyViewport(); this._applyScissor(); }
   }
@@ -368,6 +421,7 @@ class WebGLRenderingContext {
   createTexture() { return this._track(new WebGLTexture(this._pmz.createTexture()), 'tex', 'deleteTexture', 'tex'); }
   deleteTexture(t) {
     if (t && !t._deleted) {
+      this._setObjMem(t, 0);
       this._untrack(t, 'tex');
       for (let i = 0; i < 32; i++) {
         if (this._bound.tex2d[i] === t) this._bound.tex2d[i] = null;
@@ -424,10 +478,15 @@ class WebGLRenderingContext {
   }
   texImage2D(target, level, ifmt, a, b, c, d, e, f) {
     const p = this._pmz;
-    if (arguments.length >= 9) { p.texImage2D(target, level, ifmt, a, b, c, d, e, f || null, this._flipY, this._premul); return; }
+    if (arguments.length >= 9) {
+      this._recordTexMem(target, level, a, b, d, e);
+      p.texImage2D(target, level, ifmt, a, b, c, d, e, f || null, this._flipY, this._premul);
+      return;
+    }
     // (target, level, internalformat, format, type, source)
     let px = this._srcPixels(c);
     if (b !== GL.UNSIGNED_BYTE) this._stub('texImage2D(source) type 0x' + b.toString(16));
+    this._recordTexMem(target, level, px.width, px.height, a, b);
     if (px.vid && p.vidUploadTex) { p.vidUploadTex(px.vid, target, level, ifmt, a, b, this._flipY, this._premul, false, 0, 0); return; }
     if (px.cv) {
       if (a === GL.RGBA && px.width > 0 && px.height > 0) { p.texImageCv(target, level, ifmt, a, b, px.cv, this._flipY, this._premul, false, 0, 0); return; }
@@ -493,6 +552,7 @@ class WebGLRenderingContext {
   createRenderbuffer() { return this._track(new WebGLRenderbuffer(this._pmz.createRenderbuffer()), 'rb', 'deleteRenderbuffer', 'rb'); }
   deleteRenderbuffer(r) {
     if (r && !r._deleted) {
+      this._setObjMem(r, 0);
       this._untrack(r, 'rb');
       if (this._bound.rb === r) this._bound.rb = null;
       this._pmz.deleteRenderbuffer(r._id);
@@ -505,6 +565,9 @@ class WebGLRenderingContext {
   }
   renderbufferStorage(t, f, w, h) {
     const fmt = f === GL.DEPTH_STENCIL ? (this._packedDS ? 0x88F0 : GL.STENCIL_INDEX8) : f;   // DEPTH24_STENCIL8 when supported, else STENCIL_INDEX8
+    if (this._bound.rb && !this._bound.rb._deleted) {
+      this._setObjMem(this._bound.rb, Math.max(0, w | 0) * Math.max(0, h | 0) * this._rbBpp(fmt));
+    }
     this._pmz.renderbufferStorage(t, fmt, w, h);
   }
   getRenderbufferParameter(t, p) { return this._pmz.getRenderbufferParameter(t, p); }

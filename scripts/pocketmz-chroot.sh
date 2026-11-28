@@ -35,8 +35,9 @@ do_mount() {
     mount -t squashfs -o loop,ro "$IMAGE" "$ROOT" || exit 1
   fi
   for d in dev dev/pts dev/shm proc sys run tmp; do
-    [ -d "$ROOT/$d" ] || mkdir -p "$ROOT/$d"
-    is_mounted "$ROOT/$d" || mount --bind "/$d" "$ROOT/$d"
+    [ -d "/$d" ] || continue
+    [ -d "$ROOT/$d" ] || mkdir -p "$ROOT/$d" 2>/dev/null || true
+    is_mounted "$ROOT/$d" || mount --bind "/$d" "$ROOT/$d" 2>/dev/null || true
   done
   [ -z "$IMAGE" ] && cp -f /etc/resolv.conf "$ROOT/etc/resolv.conf" 2>/dev/null
   mkdir -p "$RZ/home"
@@ -50,13 +51,17 @@ do_mount() {
     mkdir -p "$POCKETMZ_BACKUP_DIR" "$POCKETMZ_GAME/save-backups"
     bind_to "$POCKETMZ_BACKUP_DIR" "game/save-backups"
   fi
+  if [ -n "$POCKETMZ_GAME" ] && [ -n "$POCKETMZ_CACHE_DIR" ]; then
+    mkdir -p "$POCKETMZ_CACHE_DIR" "$POCKETMZ_GAME/${POCKETMZ_WEB}pmz-cache"
+    bind_to "$POCKETMZ_CACHE_DIR" "game/${POCKETMZ_WEB}pmz-cache"
+  fi
   [ -n "$POCKETMZ_SRC" ] && bind_to "$POCKETMZ_SRC" gamesrc ro
   return 0
 }
 
 do_umount() {
   for r in "$RZ/root-sqfs" "$RZ/root-test" "$RZ/rootfs" "$RZ/beta/rt" "$RZ/beta/root24" "$RZ/beta/root"; do
-    for d in game/www/save game/save game/save-backups root gamesrc game tmp run sys proc dev/shm dev/pts dev; do
+    for d in game/www/save game/save game/save-backups game/www/pmz-cache game/pmz-cache root gamesrc game tmp run sys proc dev/shm dev/pts dev; do
       is_mounted "$r/$d" && umount -l "$r/$d"
     done
   done

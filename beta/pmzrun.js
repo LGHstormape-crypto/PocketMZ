@@ -4,10 +4,33 @@
 // M1-3: reach the title screen on the handheld screen, hold it, take a screenshot, print stats. See run-pmzrun.sh.
 // Env: GAME, HOLD (seconds on title, default 10), SHOT (png path), PMZ_GLDEBUG=1 (glGetError after every GL call), TOUCH=0.
 const proc = process;
-const fs = require('fs'), vm = require('vm'), path = require('path');
+const fs = require('fs'), vm = require('vm'), path = require('path'), crypto = require('crypto');
+const BETA_DIR = process.env.PMZ_BETA_DIR || __dirname;
+const PMZRT_DIR = process.env.PMZ_RT_DIR || path.join(BETA_DIR, 'pmzrt');
 const GAME = process.env.GAME || '/game';        // folder with js/ and data/ (MV: the thin copy's www/; run-pmzrun.sh sets it)
-const MV = fs.existsSync(path.join(GAME, 'js', 'rpg_core.js'));   // RPG Maker MV (PIXI v4, rpg_*.js) instead of MZ (PIXI v5, rmmz_*.js)
-const OUT = process.env.OUT || '/opt/beta/pmzrun-result.txt';
+const GAMESRC = (() => {
+  if (process.env.PMZ_GAMESRC) return process.env.PMZ_GAMESRC;
+  if (GAME === '/game' && fs.existsSync('/gamesrc')) return '/gamesrc';
+  if (GAME === '/game/www' && fs.existsSync('/gamesrc/www')) return '/gamesrc/www';
+  return '';
+})();
+const SKIP_PREFIX = 'PocketMZ_';                // PocketMZ patches are dropped, except those named in PMZ_PATCHES
+const KEEP_PATCHES = (process.env.PMZ_PATCHES || '').split(',').map(x => x.trim()).filter(Boolean).map(x => x.startsWith(SKIP_PREFIX) ? x : SKIP_PREFIX + x);   // e.g. PMZ_PATCHES=Handheld,PluginFixes
+const PATCH_FALLBACK_DIR = process.env.PMZ_PATCHES_DIR || path.join(BETA_DIR, 'patches');   // PocketMZ_*.js that are not in the thin copy's js/plugins
+const vfs = require(path.join(PMZRT_DIR, 'vfs.js')).createVfs({ gameDir: GAME, srcDir: GAMESRC, patchesDir: PATCH_FALLBACK_DIR, keepPatches: KEEP_PATCHES, fsMod: fs });
+const vfsFs = vfs.createFsProxy();
+const MV = vfs.existsSync(path.join(GAME, 'js', 'rpg_core.js'));   // RPG Maker MV (PIXI v4, rpg_*.js) instead of MZ (PIXI v5, rmmz_*.js)
+const OUT = process.env.OUT || path.join(BETA_DIR, 'pmzrun-result.txt');
+const AT_SEED = process.env.PMZ_SEED || process.env.AT_SEED || '';
+if (AT_SEED !== '') {
+  let _s = (parseInt(AT_SEED, 10) >>> 0) || 0x9e3779b9;
+  Math.random = function () {
+    _s = (_s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(_s ^ (_s >>> 15), 1 | _s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 const HOLD = (parseFloat(process.env.HOLD) || 10) * 1000;
 const SHOT = process.env.SHOT || '/opt/beta/shots/title-beta.png';   // = /storage/pocketmz/beta/shots on the device (bind-mounted by run-pmzrun.sh)
 const SHOT3 = process.env.SHOT3 || '/opt/beta/shots/map-beta.png';
@@ -40,15 +63,13 @@ function guardFail(reason) {
 const SAVE_DIR = (process.env.SAVE_DIR || (PLAY ? path.join(GAME, 'save') : '/tmp/pmz-save-test')).replace(/\/*$/, '/');
 const GPTK_FILE = process.env.PMZ_GPTK || '';       // fallback button map (per-game override > global default)
 const USER_GPTK = process.env.PMZ_USER_GPTK || '';  // live user button map in the thin copy (/game/pocketmz.gptk), edited by PocketMZ_Menu
-const pmz = require('/opt/beta/pmzrt/pmzrt.node');
-const webgl = require('/opt/beta/pmzrt/webgl.js');
+const pmz = require(path.join(PMZRT_DIR, 'pmzrt.node'));
+const webgl = require(path.join(PMZRT_DIR, 'webgl.js'));
+const memguard = require(path.join(PMZRT_DIR, 'memguard.js'));
 const nowMs = () => Number(proc.hrtime.bigint()) / 1e6;
 const TOUCH = process.env.TOUCH !== '0';        // touch every page of fake canvas/image buffers so RSS counts them
-const SKIP_PREFIX = 'PocketMZ_';                // PocketMZ patches are dropped, except those named in PMZ_PATCHES
-const KEEP_PATCHES = (process.env.PMZ_PATCHES || '').split(',').map(x => x.trim()).filter(Boolean).map(x => x.startsWith(SKIP_PREFIX) ? x : SKIP_PREFIX + x);   // e.g. PMZ_PATCHES=Handheld,PluginFixes
 // PMZ_NOQUIT=1 (autotests): pad quit combos, the PocketMZ menu's quit entry and nw.App.quit() are ignored (only a window close / MAXSEC ends the run)
 const NOQUIT = process.env.PMZ_NOQUIT === '1';
-const PATCH_FALLBACK_DIR = '/opt/beta/patches';   // PocketMZ_*.js that are not in the thin copy's js/plugins (PocketMZ_Debug: dev only), copied there by deploy-pmzrun.sh
 // PocketMZ_Debug (REPL) / PMZ_GLOBAL_REQUIRE=1: a global `require` (not `process`: Utils.isNwjs() stays false) like NW.js has it, for the injected autotest driver
 const GLOBAL_REQUIRE = process.env.PMZ_GLOBAL_REQUIRE === '1' || KEEP_PATCHES.includes('PocketMZ_Debug');
 const T0 = Date.now();
@@ -91,12 +112,35 @@ async function measure(label, extra) {
   return r;
 }
 
-// memory guard
+// memory guard (soft shrink + graceful termination with save-in-flight protection)
+const memGuard = memguard.createMemGuard({
+  softMB: proc.env.PMZ_MEM_SOFT_MB !== undefined && proc.env.PMZ_MEM_SOFT_MB !== '' ? parseFloat(proc.env.PMZ_MEM_SOFT_MB) : 160,
+  hardMB: proc.env.PMZ_MEM_HARD_MB !== undefined && proc.env.PMZ_MEM_HARD_MB !== '' ? parseFloat(proc.env.PMZ_MEM_HARD_MB) : 120,
+  swapHardMB: proc.env.PMZ_SWAP_HARD_MB !== undefined && proc.env.PMZ_SWAP_HARD_MB !== '' ? parseFloat(proc.env.PMZ_SWAP_HARD_MB) : 120,
+  readMemInfo: () => memguard.parseMemInfo(fs.readFileSync('/proc/meminfo', 'utf8')),
+  onShrink: ({ availMB, swapMB }) => {
+    let freed = 0;
+    try { if (typeof c2d !== 'undefined' && c2d.trimImageSurfaces) freed = c2d.trimImageSurfaces(0); } catch (e) {}
+    try { if (typeof globalThis.__pmzShrinkCaches === 'function') globalThis.__pmzShrinkCaches(); } catch (e) {}
+    try { if (typeof global.gc === 'function') global.gc(); } catch (e) {}
+    log('MEMGUARD shrink: avail=' + availMB.toFixed(0) + 'MB swapFree=' + (Number.isFinite(swapMB) ? swapMB.toFixed(0) : '?') + 'MB csFreed=' + (freed / 1048576).toFixed(1) + 'MB');
+  },
+  getPendingSaves: () => pendingSaves + activeSaveWrites,
+  onTerminate: ({ availMB, swapMB }) => {
+    console.log('MEMGUARD: low memory avail=' + availMB.toFixed(0) + 'MB swapFree=' + (Number.isFinite(swapMB) ? swapMB.toFixed(0) : '?') + 'MB, shutting down');
+    try {
+      const mi = fs.readFileSync('/proc/meminfo', 'utf8').split('\n').filter(l => /^(MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree):/.test(l)).join(' | ');
+      if (mi) console.log('MEMGUARD meminfo:', mi);
+    } catch (e) {}
+    const killTimer = setTimeout(() => proc.kill(proc.pid, 'SIGKILL'), 1500);
+    if (killTimer.unref) killTimer.unref();
+    try { pmz.shutdown(); } catch (e) {}
+    proc.exit(137);
+  },
+  log,
+});
 setInterval(() => {
-  try {
-    const m = /MemAvailable:\s+(\d+)/.exec(fs.readFileSync('/proc/meminfo', 'utf8'));
-    if (m && +m[1] < 150 * 1024) { console.log('MEMGUARD: MemAvailable ' + (m[1] / 1024).toFixed(0) + ' MB < 150 MB, killing'); proc.kill(proc.pid, 'SIGKILL'); }
-  } catch (e) {}
+  try { memGuard.tick(); } catch (e) {}
 }, 1000).unref();
 proc.on('uncaughtException', e => { otherErrors.push('uncaught: ' + (e && e.stack || e)); log('UNCAUGHT', e && e.stack || e); if (!guardBooted) guardFail('uncaught error at boot: ' + String(e && e.stack || e).split('\n').slice(0, 2).join(' ')); });
 proc.on('unhandledRejection', e => { otherErrors.push('unhandled: ' + (e && e.stack || e)); log('UNHANDLED', e && e.stack || e); if (!guardBooted) guardFail('unhandled rejection at boot: ' + String(e && e.stack || e).split('\n').slice(0, 2).join(' ')); });
@@ -134,11 +178,17 @@ function touch(buf) {
 }
 const canvasReg = new FinalizationRegistry(h => { acct.canvasLive -= h.n; acct.canvasCount--; });
 const imageReg = new FinalizationRegistry(h => { acct.imageLive -= h.n; acct.imageCount--; });
-
+// --- module: beta/src/10-window-loop-probe.js ---
 // ---------- GL window + frame loop ----------
-const warned = new Set(), warnings = [], glMessages = [], frames = [];
+const warned = new Set(), warnings = [], glMessages = [], frames = [], runtimeStubs = new Set();
 function warnOnce(m) { if (!warned.has(m)) { warned.add(m); warnings.push(m); log('WARN', m); } }
-let glInfo = null, mainGL = null, mainCanvas = null, shotPending = null, shotInfo = null, lastFrameStart = 0, nextTickAt = 0, lastGameDrewAt = 0;
+function stubWarn(name) { if (!runtimeStubs.has(name)) { runtimeStubs.add(name); warnOnce('runtime stub: ' + name); } }
+let glInfo = null, mainGL = null, mainCanvas = null, shotPending = null, shotInfo = null, lastFrameStart = 0, nextTickAt = 0, lastGameDrewAt = 0, pp = null;
+function ensurePostProc() {
+  if (!pp) pp = require(path.join(PMZRT_DIR, 'postproc.js')).create({ pmz, getGL: () => mainGL, getDrawable: () => glInfo, onLog: (...a) => log(...a) });
+  return pp;
+}
+if (proc.env.PMZ_SHADER && proc.env.PMZ_SHADER !== 'off') ensurePostProc().setMode(proc.env.PMZ_SHADER);
 const shotInfos = {};
 const timings = {};
 function initWindow() {
@@ -156,6 +206,7 @@ function createMainGL(canvas, attrs, probe) {
     pmz, drawableWidth: glInfo.drawableWidth, drawableHeight: glInfo.drawableHeight,
     es3: glInfo.es3, hasVao: glInfo.hasVao, hasInstancing: glInfo.hasInstancing,
     gpuWorkarounds: proc.env.PMZ_GPU_WORKAROUNDS || '',
+    glMemWeight: proc.env.PMZ_GL_MEM_WEIGHT !== undefined && proc.env.PMZ_GL_MEM_WEIGHT !== '' ? parseFloat(proc.env.PMZ_GL_MEM_WEIGHT) : 0.5,
     onWarn: warnOnce, probe: !!probe,
   });
   if (probe) return gl;
@@ -181,6 +232,7 @@ function frameLoop() {
   if (rafPending.size || fsVid) {
     if (!nextTickAt || tStart - nextTickAt > 50) nextTickAt = tStart;
     nextTickAt += 1000 / 60;
+    if (pp && pp.active) pp.beginFrame();
     if (mainGL) mainGL._defaultFbDirty = false;
     const cbs = [...rafPending.values()]; rafPending.clear(); const ts = performance.now();
     for (const f of cbs) { try { f(ts); } catch (e) { otherErrors.push('raf: ' + e.stack); log('RAF ERROR', e && e.stack); } }
@@ -192,6 +244,7 @@ function frameLoop() {
     const tJs = nowMs();
     let tEnd = tJs;
     if (drew || ovSwapped) {
+      if (pp && pp.active) pp.present();
       if (shotPending) takeShot();
       pmz.swap();
       tEnd = nowMs();
@@ -298,6 +351,7 @@ function flushProbe() {
       canvasMB: +MB(acct.canvasLive).toFixed(1), canvasN: acct.canvasCount,
       imageMB: +MB(acct.imageLive).toFixed(1), imageN: acct.imageCount,
       glGc: mainGL && mainGL._gcStats ? Object.assign({}, mainGL._gcStats) : null,
+      stubs: (runtimeStubs.size || (mainGL && mainGL.stubs.size)) ? [...Array.from(runtimeStubs), ...(mainGL ? Array.from(mainGL.stubs, s => 'gl:' + s) : [])] : undefined,
       glErrs: typeof glMessages !== 'undefined' ? glMessages.length : 0,
       otherErrs: typeof otherErrors !== 'undefined' ? otherErrors.length : 0,
       snaps: globalThis.PMZ_IMG ? (globalThis.PMZ_IMG.snaps || 0) : 0,
@@ -307,7 +361,7 @@ function flushProbe() {
   } catch (e) {}
 }
 if (PROBE_FILE) setInterval(flushProbe, 5000).unref();
-
+// --- module: beta/src/20-dom-media.js ---
 // ---------- DOM shims ----------
 const listenersOf = o => o._ls || (o._ls = {});
 function addL(o, t, f) { (listenersOf(o)[t] || (listenersOf(o)[t] = [])).push(f); }
@@ -333,6 +387,10 @@ class FakeElement {
     this.parentNode = null; this._attrs = {}; this.style = { setProperty: noop, removeProperty: noop }; this.dataset = {};
     this.classList = { add: noop, remove: noop, toggle: noop, contains: () => false };
     this.innerHTML = ''; this._text = ''; this.id = '';
+    if (this.tagName === 'INPUT' || this.tagName === 'TEXTAREA') {
+      this.value = ''; this.type = 'text'; this.maxLength = -1; this.placeholder = '';
+      this.disabled = false; this.readOnly = false;
+    }
   }
   appendChild(c) {
     c.parentNode = this; this.children.push(c);
@@ -354,7 +412,21 @@ class FakeElement {
   removeEventListener(t, f) { remL(this, t, f); }
   dispatchEvent(ev) { fire(this, ev.type, ev); return true; }
   getBoundingClientRect() { return this === mainCanvas ? canvasScreenRect(this) : { left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480 }; }
-  focus() {} blur() {} click() {} scrollIntoView() {}
+  focus() {
+    doc.activeElement = this;
+    fire(this, 'focus');
+    if ((this.tagName === 'INPUT' || this.tagName === 'TEXTAREA') && !this.disabled && !this.readOnly && typeof globalThis.__pmzOpenIme === 'function') {
+      globalThis.__pmzOpenIme(this);
+    }
+  }
+  blur() {
+    if (doc.activeElement === this) doc.activeElement = bodyEl;
+    fire(this, 'blur');
+  }
+  click() {
+    fire(this, 'click', { target: this, currentTarget: this, preventDefault: noop, stopPropagation: noop, stopImmediatePropagation: noop });
+  }
+  scrollIntoView() {}
   querySelector(sel) { const s = String(sel || '').trim(); if (!s) return null; if (s[0] === '#') return ids[s.slice(1)] || null; const m = this.getElementsByTagName(s); return m[0] || null; } querySelectorAll() { const r = []; r.item = i => r[i] || null; return r; }
   // tree walk (MV Utils.canReadGameFiles() asks for the last <script>; _modifyExistingElements for '*'; Graphics.loadFont for head.item(0))
   getElementsByTagName(tag) { const t = String(tag).toUpperCase(), r = []; const walk = n => { for (const c of n.children || []) { if (t === '*' || c.tagName === t) r.push(c); walk(c); } }; walk(this); r.item = i => r[i] || null; return r; }
@@ -373,7 +445,7 @@ function compat(kind, detail) {
   if (GUARD) guardFail('COMPAT ' + k);   // a skipped cutscene / missing BGM is worse than a restart on NW.js
   const f = proc.env.PMZ_COMPAT_FILE; if (f) { try { fs.appendFileSync(f, k + '\n'); } catch (e) {} }
 }
-const MEDIA_UNSUPPORTED = /\.(gif)(\?|#|$)/i;   // audio (.ogg/.m4a/.rpgmvm/.mp3/.aac/.wav) and <video> (.mp4/.webm/.ogv/.mov) are natively decoded via FFmpeg in pmzrt
+const MEDIA_UNSUPPORTED = /(?!)/;   // png/jpg/webp/gif, audio (.ogg/.m4a/.rpgmvm/.mp3/.aac/.wav), and <video> (.mp4/.webm/.ogv/.mov) are natively decoded in pmzrt
 const activeVideos = new Set();
 function visibleFullscreenVideo() {
   for (const v of activeVideos) {
@@ -512,8 +584,9 @@ if (proc.env.PMZ_PROF) for (const k of Object.keys(pmz)) if (proc.env.PMZ_PROF =
   const f = pmz[k], st = prof[k] = { n: 0, ms: 0 };
   pmz[k] = function () { const t = nowMs(); try { return f.apply(this, arguments); } finally { st.n++; st.ms += nowMs() - t; } };
 }
-const c2d = require('/opt/beta/pmzrt/canvas2d.js').create({
-  pmz, FakeElement, resolvePath, makeBlob: (parts, type) => new FakeBlob(parts, { type }), pid: proc.pid, warn: warnOnce,
+const c2d = require(path.join(PMZRT_DIR, 'canvas2d.js')).create({
+  pmz, FakeElement, resolvePath: u => vfs.resolvePath(resolvePath(u)), makeBlob: (parts, type) => new FakeBlob(parts, { type }), pid: proc.pid, warn: warnOnce,
+  csCacheMaxBytes: proc.env.PMZ_CS_CACHE_MB !== undefined && proc.env.PMZ_CS_CACHE_MB !== '' ? parseFloat(proc.env.PMZ_CS_CACHE_MB) * 1024 * 1024 : 20 * 1024 * 1024,
   // only one GL context exists (the SDL window): it belongs to the game canvas. Other canvases (PIXI's isWebGLSupported() and
   // shader-introspection test contexts) get a 'probe' wrapper on the same GL context that never touches viewport state.
   createGL: (canvas, attrs) => createMainGL(canvas, attrs, String(canvas.id).toLowerCase() !== 'gamecanvas'),   // MZ 'gameCanvas', MV 'GameCanvas'
@@ -524,9 +597,11 @@ function pngSize(buf) {
   if (buf.length >= 24 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
   return null;
 }
-// png / jpg / webp by magic bytes (GIF not decoded: none of the library's games use it)
+// png / jpg / webp / gif by magic bytes
 function imageKind(b) {
-  if (!b || b.length < 12) return null;
+  if (!b || b.length < 6) return null;
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38 && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61) return 'gif';
+  if (b.length < 12) return null;
   if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'png';
   if (b[0] === 0xff && b[1] === 0xd8) return 'jpg';
   if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'webp';
@@ -534,19 +609,35 @@ function imageKind(b) {
 }
 class FakeImage extends FakeElement {
   // _pix = { width, height, data: RGBA8 non-premultiplied } is what webgl.js uploads (texImage2D with an Image source)
-  constructor() { super('img'); this._src = ''; this.width = 0; this.height = 0; this.naturalWidth = 0; this.naturalHeight = 0; this.complete = false; this._pix = null; this._held = { n: 0 }; imageReg.register(this, this._held); acct.imageCount++; }
+  constructor() { super('img'); this._src = ''; this.width = 0; this.height = 0; this.naturalWidth = 0; this.naturalHeight = 0; this.complete = false; this._pix = null; this._animTimer = null; this._held = { n: 0 }; imageReg.register(this, this._held); acct.imageCount++; }
+  _stopAnim() { if (this._animTimer) { clearTimeout(this._animTimer); this._animTimer = null; } }
   get src() { return this._src; }
   set src(v) {
-    this._src = String(v); this.complete = false;
-    if (!this._src) { this._pix = null; this._cs = null; this._csPix = null; acct.imageLive -= this._held.n; this._held.n = 0; return; }   // src = '' releases the pixels
+    this._src = String(v); this.complete = false; this._stopAnim();
+    if (!this._src) { c2d.dropImageSurface(this); this._pix = null; acct.imageLive -= this._held.n; this._held.n = 0; return; }   // src = '' releases the pixels
     const done = (data, err) => {
       if (err) { this.complete = true; this.error = true; fire(this, 'error'); return; }
       let pix; const kind = imageKind(data);
       if (kind) {
-        try { pix = kind === 'png' ? pmz.decodePng(data) : kind === 'jpg' ? pmz.decodeJpeg(data) : pmz.decodeWebp(data); }
+        try { pix = kind === 'png' ? pmz.decodePng(data) : kind === 'jpg' ? pmz.decodeJpeg(data) : kind === 'gif' ? pmz.decodeGif(data) : pmz.decodeWebp(data); }
         catch (e) { log(kind.toUpperCase() + ' decode failed:', String(this._src).slice(0, 80), e.message); this.complete = true; this.error = true; fire(this, 'error'); return; }
-      } else { warnOnce('unsupported image format (' + (data && data.length >= 4 ? 'magic ' + Buffer.from(data.buffer, data.byteOffset, 4).toString('hex') : 'empty') + ', only png/jpg/webp): ' + String(this._src).slice(0, 60)); pix = { width: 1, height: 1, data: new Uint8Array(4) }; }
+      } else { warnOnce('unsupported image format (' + (data && data.length >= 4 ? 'magic ' + Buffer.from(data.buffer, data.byteOffset, 4).toString('hex') : 'empty') + ', only png/jpg/webp/gif): ' + String(this._src).slice(0, 60)); pix = { width: 1, height: 1, data: new Uint8Array(4) }; }
       this._pix = pix; this.width = this.naturalWidth = pix.width; this.height = this.naturalHeight = pix.height;
+      if (pix.frames && pix.frames.length > 1) {
+        let fi = 0;
+        const step = () => {
+          if (!this._pix || this._pix.frames !== pix.frames) return;
+          fi = (fi + 1) % pix.frames.length;
+          c2d.dropImageSurface(this);
+          this._pix = { width: pix.width, height: pix.height, data: pix.frames[fi].data, frames: pix.frames };
+          const t = setTimeout(step, Math.max(16, pix.frames[fi].delayMs || 100));
+          if (t.unref) t.unref();
+          this._animTimer = t;
+        };
+        const t = setTimeout(step, Math.max(16, pix.frames[0].delayMs || 100));
+        if (t.unref) t.unref();
+        this._animTimer = t;
+      }
       const n = pix.data.length;
       acct.imageLive += n - this._held.n; this._held.n = n; acct.imageEver += n;
       this.complete = true; fire(this, 'load');
@@ -558,13 +649,13 @@ class FakeImage extends FakeElement {
     } else if (s.startsWith('data:')) {
       setImmediate(() => { const i = s.indexOf('base64,'); done(i >= 0 ? Buffer.from(s.slice(i + 7), 'base64') : Buffer.alloc(0)); });
     } else if (s) {
-      fs.readFile(resolvePath(s), (e, d) => e ? done(null, true) : done(d));
+      vfs.readFile(resolvePath(s), (e, d) => e ? done(null, true) : done(d));
     }
   }
   decode() { return Promise.resolve(); }
 }
 function readFileWithAudioFallback(p, cb) {
-  fs.readFile(p, (e, d) => {
+  vfs.readFile(p, (e, d) => {
     if (!e || e.code !== 'ENOENT') return cb(e, d);
     let alts = null;
     if (/\.ogg$/i.test(p)) alts = [p.slice(0, -4) + '.m4a', p.slice(0, -4) + '.mp3', p.slice(0, -4) + '.wav'];
@@ -572,13 +663,13 @@ function readFileWithAudioFallback(p, cb) {
     else if (/\.m4a$/i.test(p)) alts = [p.slice(0, -4) + '.ogg'];
     else if (/\.rpgmvm$/i.test(p)) alts = [p.slice(0, -7) + '.rpgmvo'];
     if (alts) {
-      for (const a of alts) { if (fs.existsSync(a)) return fs.readFile(a, cb); }
+      for (const a of alts) { if (vfs.existsSync(a)) return vfs.readFile(a, cb); }
     }
     cb(e, d);
   });
 }
 class FakeXHR {
-  constructor() { this.readyState = 0; this.status = 0; this.responseType = ''; this.response = null; this.responseText = ''; this._h = {}; }
+  constructor() { this.readyState = 0; this.status = 0; this.responseType = ''; this.response = null; this.responseText = ''; this.responseXML = null; this._h = {}; }
   open(m, url) { this._url = url; this.readyState = 1; }
   setRequestHeader() {} overrideMimeType() {} abort() {} getResponseHeader() { return null; }
   addEventListener(t, f) { addL(this, t, f); }
@@ -591,7 +682,11 @@ class FakeXHR {
       else {
         let s = d.toString('utf8'); if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
         this.responseText = s;
-        if (this.responseType === 'json') { try { this.response = JSON.parse(s); } catch (x) { this.response = null; } } else this.response = s;
+        if (this.responseType === 'json') { try { this.response = JSON.parse(s); } catch (x) { this.response = null; } }
+        else if (this.responseType === 'document' || /\.xml(\?|#|$)/i.test(String(this._url || ''))) {
+          try { this.responseXML = new DOMParser().parseFromString(s, 'text/xml'); } catch (x) { this.responseXML = null; }
+          this.response = this.responseType === 'document' ? this.responseXML : s;
+        } else this.response = s;
       }
       fire(this, 'readystatechange'); fire(this, 'load');
     });
@@ -608,7 +703,7 @@ function fakeFetch(url) {
 const FakeFontFace = c2d.FontFace;
 // emscripten (effekseer.min.js) prefers WebAssembly.instantiateStreaming(fetch(url)): our fetch result is no Response, so give it a Response-compatible path
 if (typeof WebAssembly.instantiateStreaming === 'function') WebAssembly.instantiateStreaming = async (src, imports) => WebAssembly.instantiate(await (await src).arrayBuffer(), imports);
-
+// --- module: beta/src/30-scripts-globals.js ---
 // ---------- script loading (sequential, like async=false) ----------
 const queue = []; let pumping = false, mainDone = false;
 function enqueueScript(el) { queue.push(el); if (!pumping) setImmediate(pump); }
@@ -625,9 +720,9 @@ function scriptName(p) { return path.basename(p, '.js'); }
 async function runScript(el) {
   const file = resolvePath(el.src);
   let code;
-  const isPlugin = file.includes('/js/plugins/') && !file.endsWith('plugins.js');
+  const isPlugin = file.replace(/\\/g, '/').includes('/js/plugins/') && !file.endsWith('plugins.js');
   const name = scriptName(file);
-  try { code = await fs.promises.readFile(file, 'utf8'); }
+  try { code = await vfs.readFilePromises(file, 'utf8'); }
   catch (e) {
     if (isPlugin && name.startsWith(SKIP_PREFIX)) { try { code = await fs.promises.readFile(path.join(PATCH_FALLBACK_DIR, name + '.js'), 'utf8'); log('plugin ' + name + ' from ' + PATCH_FALLBACK_DIR); } catch (e2) {} }
     if (code === undefined) { fire(el, 'error'); return; }
@@ -696,7 +791,7 @@ async function afterScript(name) {
 // (effect-lifetimes.json, 80 effects from a reference MZ game; unknown effects 90). update(dt) is called once per logic frame by SceneManager.
 const EFK_FAKE = proc.env.PMZ_EFFEKSEER === 'fake';   // default: the game's real effekseer.min.js + effekseer.wasm (WebAssembly in Node, GL on our WebGL layer)
 let effLife = {}; const EFF_ADD = proc.env.PMZ_EFFECT_ADD !== undefined && proc.env.PMZ_EFFECT_ADD !== '' ? +proc.env.PMZ_EFFECT_ADD : 1;   // + frames: the real animation ended 1 frame later in the NW.js autotest (calibrated against the seeded trace)
-try { effLife = JSON.parse(fs.readFileSync('/opt/beta/effect-lifetimes.json', 'utf8')); } catch (e) { log('effect-lifetimes.json missing: all effects last 90 frames'); }
+try { effLife = JSON.parse(fs.readFileSync(path.join(BETA_DIR, 'effect-lifetimes.json'), 'utf8')); } catch (e) { log('effect-lifetimes.json missing: all effects last 90 frames'); }
 function makeFakeEffekseerContext() {
   const handles = new Set();
   const newHandle = life => {
@@ -741,29 +836,48 @@ const rafPending = new Map(); let rafSeq = 0;
 def('requestAnimationFrame', f => { const id = ++rafSeq; rafPending.set(id, f); return id; }); def('cancelAnimationFrame', id => { rafPending.delete(id); });
 def('WebGLRenderingContext', webgl.WebGLRenderingContext);
 def('requestIdleCallback', f => setTimeout(() => f({ timeRemaining: () => 10 }), 1));
-def('HTMLElement', FakeElement); def('HTMLCanvasElement', c2d.HTMLCanvasElement); def('CanvasRenderingContext2D', c2d.CanvasRenderingContext2D); def('ImageData', c2d.ImageData); def('CanvasGradient', c2d.CanvasGradient); def('CanvasPattern', c2d.CanvasPattern); def('HTMLImageElement', FakeImage); def('Image', FakeImage); def('XMLDocument', class XMLDocument {});   // PIXI BitmapFontLoader: data instanceof XMLDocument (XML fonts are not parsed: no DOMParser)
+const webcompat = require(path.join(PMZRT_DIR, 'webcompat.js'));
+const PMZWorker = webcompat.createWorkerClass({ baseDir: GAME, blobUrls: blobs, maxWorkers: Number(proc.env.PMZ_MAX_WORKERS) || 2 });
+def('HTMLElement', FakeElement); def('HTMLCanvasElement', c2d.HTMLCanvasElement); def('CanvasRenderingContext2D', c2d.CanvasRenderingContext2D); def('ImageData', c2d.ImageData); def('CanvasGradient', c2d.CanvasGradient); def('CanvasPattern', c2d.CanvasPattern); def('HTMLImageElement', FakeImage); def('Image', FakeImage); def('XMLDocument', webcompat.XMLDocument); def('DOMParser', webcompat.DOMParser); def('Worker', PMZWorker);
 def('HTMLVideoElement', FakeMedia); def('HTMLAudioElement', FakeMedia); def('Audio', FakeMedia);
 def('Blob', FakeBlob); def('XMLHttpRequest', FakeXHR); def('fetch', fakeFetch); def('FontFace', FakeFontFace);
-def('MediaRecorder', class MediaRecorder { constructor() { this.state = 'inactive'; } static isTypeSupported() { return false; } start() {} stop() {} pause() {} resume() {} addEventListener() {} removeEventListener() {} });
+def('MediaRecorder', class MediaRecorder { constructor() { this.state = 'inactive'; stubWarn('MediaRecorder'); } static isTypeSupported() { return false; } start() { stubWarn('MediaRecorder'); } stop() {} pause() {} resume() {} addEventListener() {} removeEventListener() {} });
 def('MediaStream', class MediaStream { constructor(t) { this._tracks = t || []; } getTracks() { return this._tracks; } getVideoTracks() { return []; } getAudioTracks() { return []; } });
 def('FinalizationRegistry', FinalizationRegistry);
-const ls = new Map();
-def('localStorage', { getItem: k => ls.has(k) ? ls.get(k) : null, setItem: (k, v) => ls.set(k, String(v)), removeItem: k => ls.delete(k), clear: () => ls.clear(), key: i => [...ls.keys()][i] || null, get length() { return ls.size; } });
-def('sessionStorage', globalThis.localStorage);
-def('indexedDB', {});
+def('localStorage', webcompat.createPersistentStorage(path.join(SAVE_DIR, 'pmz_localstorage.json')));
+def('sessionStorage', webcompat.createMemoryStorage());
+def('indexedDB', new Proxy({}, {
+  get(_, prop) {
+    stubWarn('indexedDB.' + String(prop));
+    if (prop === 'open' || prop === 'deleteDatabase') {
+      return () => {
+        const req = { result: null, error: new Error('indexedDB unsupported'), onerror: null, onsuccess: null, onupgradeneeded: null };
+        setImmediate(() => { if (typeof req.onerror === 'function') req.onerror({ target: req }); });
+        return req;
+      };
+    }
+    if (prop === 'cmp') return () => 0;
+    return undefined;
+  }
+}));
+def('PMZ_applyShader', mode => {
+  const m = ensurePostProc().setMode(mode);
+  globalThis.PMZ_FORCE_REDRAW = true;
+  return m;
+});
 // audio: context stub so MZ believes WebAudio exists; AudioManager buffers are replaced after the engine loads (see onAllScriptsLoaded)
 // M2-2: real WebAudio subset (pmzrt/webaudio.js over the C mixer + SDL audio). PMZ_AUDIO=off: the old stub (silent, dummy buffers; for baselines).
 const AUDIO_ON = proc.env.PMZ_AUDIO !== 'off';
 let wa = null;
 if (AUDIO_ON) {
   const vol = parseFloat(proc.env.PMZ_VOLUME);   // run-pmzrun.sh: 0.3 in test mode, 1.0 in play mode
-  wa = require('/opt/beta/pmzrt/webaudio.js').create({ pmz, log, warn: warnOnce, volume: vol >= 0 ? vol : 1, dump: proc.env.PMZ_AUDIO_DUMP || '', env: proc.env });
+  wa = require(path.join(PMZRT_DIR, 'webaudio.js')).create({ pmz, log, warn: warnOnce, volume: vol >= 0 ? vol : 1, dump: proc.env.PMZ_AUDIO_DUMP || '', env: proc.env });
   def('AudioContext', wa.AudioContext); def('AudioBuffer', wa.AudioBuffer);
 } else def('AudioContext', class { constructor() { return makeNoopProxy({ state: 'running', currentTime: 0, sampleRate: 44100, decodeAudioData: () => Promise.resolve(makeNoopProxy({ duration: 1, length: 1, numberOfChannels: 2, sampleRate: 44100 })) }); } });
 def('webkitAudioContext', globalThis.AudioContext);
 const bodyEl = new FakeElement('body'), headEl = new FakeElement('head'), htmlEl = new FakeElement('html');
 const doc = Object.assign(new FakeElement('#document'), {
-  body: bodyEl, head: headEl, documentElement: htmlEl, currentScript: null, readyState: 'complete', visibilityState: 'visible', hidden: false, title: '',
+  body: bodyEl, head: headEl, documentElement: htmlEl, activeElement: bodyEl, currentScript: null, readyState: 'complete', visibilityState: 'visible', hidden: false, title: '',
   fonts: c2d.fontSet,
   createElement(tag) {
     tag = String(tag).toLowerCase();
@@ -827,7 +941,7 @@ function overlayFrame(gameDrew, now) {
       const y0 = Math.max(0, Math.floor((480 - vh) / 2));
       return { x0, y0, w: Math.min(640 - x0 * 2, vw), h: Math.min(480 - y0 * 2, vh) };
     };
-    ov = require('/opt/beta/overlay.js').create({ doc, getCursor, getViewport });
+    ov = require(path.join(BETA_DIR, 'overlay.js')).create({ doc, getCursor, getViewport });
     ovTex = PIXI.Texture.from(ov.canvas); ovSprite = new PIXI.Sprite(ovTex); ovCont = new PIXI.Container(); ovCont.addChild(ovSprite);
     // warm-up at boot (invisible): texture allocation / first render of the overlay path cost ~0.7 s when the menu is opened for the first time
     const R0 = MV ? Graphics._renderer : Graphics.app.renderer, last0 = R0._lastObjectRendered; ovSprite.alpha = 0; ovTex.baseTexture.update();
@@ -876,7 +990,7 @@ function overlayFrame(gameDrew, now) {
   overlayFrame.n = (overlayFrame.n || 0) + 1;
   return false;
 }
-
+// --- module: beta/src/40-input-mouse.js ---
 // ---------- input: SDL events -> engine keyboard & virtual mouse events ----------
 // Physical events (play mode) and scripted ones (tests) both go through handleInput(), which turns them into keydown/keyup and
 // mousemove/mousedown/mouseup events on `document` / canvas (rmmz/rpg Input & TouchInput listen there).
@@ -1024,6 +1138,19 @@ function moveMouseTo(nx, ny, now, forceFire) {
 }
 function mousePress(src, which) {
   if (isMenuOpen()) return;
+  if (which === 'left' && typeof ov !== 'undefined' && ov && ov.hitTargets && ov.hitTargets.length) {
+    ensureMousePos();
+    const dw = (glInfo && glInfo.drawableWidth) || ov.W || 640;
+    const dh = (glInfo && glInfo.drawableHeight) || ov.H || 480;
+    const ox = vmouse.x * (ov.W / dw), oy = vmouse.y * (ov.H / dh);
+    for (let i = ov.hitTargets.length - 1; i >= 0; i--) {
+      const h = ov.hitTargets[i];
+      if (ox >= h.x && ox <= h.x + h.w && oy >= h.y && oy <= h.y + h.h) {
+        if (typeof h.el.click === 'function') h.el.click();
+        return;
+      }
+    }
+  }
   const s = vmouse.btnSources[which]; if (!s) return;
   const first = s.size === 0; s.add(src);
   if (!first) return;
@@ -1175,11 +1302,13 @@ function handleInput(e) {
   }
 }
 // play mode: leave after Select+Start / window close; saves in flight (async pako + file write) are finished first
-let pendingSaves = 0, quitting = false;
+let pendingSaves = 0, activeSaveWrites = 0, quitting = false;
 async function requestQuit(why) {
   if (quitting) return; quitting = true; log('QUIT requested: ' + why);
   const t0 = Date.now(); while (pendingSaves > 0 && Date.now() - t0 < 8000) await sleep(50);
   if (pendingSaves > 0) log('QUIT: ' + pendingSaves + ' save(s) still pending after 8 s');
+  try { if (globalThis.localStorage && globalThis.localStorage.flush) globalThis.localStorage.flush(); } catch (_) {}
+  try { if (globalThis.Worker && globalThis.Worker.terminateAll) await globalThis.Worker.terminateAll(); } catch (_) {}
   finish(0);
 }
 // NW.js stand-ins for the PocketMZ_* patches (see runScript): `nw` (__dirname = the thin copy, App.quit = leave like F2+Start), a `process` that
@@ -1190,7 +1319,7 @@ const nwShim = {
 };
 const patchProcess = new Proxy(proc, { get(t, k) { if (k === 'mainModule') return { filename: resolvePath('index.html') }; const v = t[k]; return typeof v === 'function' ? v.bind(t) : v; } });
 const patchWindow = new Proxy(globalThis, {
-  get(t, k) { return k === 'require' ? require : k === 'process' ? patchProcess : k === 'nw' ? nwShim : t[k]; },
+  get(t, k) { return k === 'require' ? (n => n === 'fs' ? vfsFs : require(n)) : k === 'process' ? patchProcess : k === 'nw' ? nwShim : t[k]; },
   set(t, k, v) { t[k] = v; return true; },
 });
 // NW-style local-file saves. Utils.isNwjs() stays false here (no global require/process for the page), so StorageManager is switched to
@@ -1201,7 +1330,12 @@ function patchStorage() {
   if (MV) {   // MV: <dir>/file1.rpgsave, config.rpgsave, global.rpgsave (LZString base64), same files as NW.js; the engine's own versions call require('fs')
     S.isLocalMode = () => true;
     S.localFileDirectoryPath = () => SAVE_DIR;
-    S.saveToLocalFile = function (id, json) { fs.mkdirSync(SAVE_DIR, { recursive: true }); fs.writeFileSync(this.localFilePath(id), LZString.compressToBase64(json)); };
+    S.saveToLocalFile = function (id, json) {
+      fs.mkdirSync(SAVE_DIR, { recursive: true });
+      activeSaveWrites++;
+      try { memguard.atomicWriteFileSync(fs, this.localFilePath(id), LZString.compressToBase64(json)); }
+      finally { activeSaveWrites--; }
+    };
     const rd = f => fs.existsSync(f) ? fs.readFileSync(f, { encoding: 'utf8' }) : null;
     S.loadFromLocalFile = function (id) { return LZString.decompressFromBase64(rd(this.localFilePath(id))); };
     S.loadFromLocalBackupFile = function (id) { return LZString.decompressFromBase64(rd(this.localFilePath(id) + '.bak')); };
@@ -1217,7 +1351,11 @@ function patchStorage() {
   S.fsRename = (a, b) => { if (fs.existsSync(a)) fs.renameSync(a, b); };
   S.fsUnlink = p => { if (fs.existsSync(p)) fs.unlinkSync(p); };
   S.fsReadFile = p => fs.existsSync(p) ? fs.readFileSync(p, { encoding: 'utf8' }) : null;
-  S.fsWriteFile = (p, d) => fs.writeFileSync(p, d);
+  S.fsWriteFile = (p, d) => {
+    activeSaveWrites++;
+    try { memguard.atomicWriteFileSync(fs, p, d); }
+    finally { activeSaveWrites--; }
+  };
   S.localFileExists = n => fs.existsSync(S.filePath(n));
   const so = S.saveObject;
   S.saveObject = function () { pendingSaves++; return so.apply(this, arguments).finally(() => { pendingSaves--; }); };
@@ -1232,7 +1370,7 @@ function patchStorage() {
   if (MV) await bootIndexHtml();   // MV: index.html lists every script (PIXI v4, rpg_*.js, plugins.js, main.js) and the font stylesheet
   else {
     // MZ: load main.js like index.html does (it loads the rest itself)
-    const mainEl = new FakeElement('script'); mainEl.src = 'file:///game/js/main.js'; mainEl.type = 'text/javascript';
+    const mainEl = new FakeElement('script'); mainEl.src = 'file://' + path.join(GAME, 'js', 'main.js'); mainEl.type = 'text/javascript';
     bodyEl.appendChild(mainEl);
   }
 })();
@@ -1243,13 +1381,13 @@ async function bootIndexHtml() {
   // α): Utils.isNwjs() is true, StorageManager's own local-file mode works (patchStorage only redirects the folder). PMZ_NWJS=0: browser-only globals.
   if (proc.env.PMZ_NWJS !== '0') {
     const gui = { Window: { get: () => makeNoopProxy() }, App: nwShim.App, Shell: { openExternal: noop, openItem: noop, showItemInFolder: noop } };
-    def('require', n => n === 'nw.gui' ? gui : require(n)); def('process', patchProcess); def('nw', nwShim);
+    def('require', n => n === 'nw.gui' ? gui : n === 'fs' ? vfsFs : require(n)); def('process', patchProcess); def('nw', nwShim);
   }
-  const html = fs.readFileSync(path.join(GAME, 'index.html'), 'utf8');
+  const html = vfs.readFileSync(path.join(GAME, 'index.html'), 'utf8');
   const attr = (tag, name) => { const m = new RegExp('\\b' + name + '\\s*=\\s*(["\'])(.*?)\\1', 'i').exec(tag); return m ? m[2] : null; };
   for (const tag of html.match(/<link\b[^>]*>/gi) || []) {
     const href = /stylesheet/i.test(attr(tag, 'rel') || '') && attr(tag, 'href'); if (!href) continue;
-    let css = ''; try { css = fs.readFileSync(resolvePath(href), 'utf8'); } catch (e) { log('index.html: stylesheet ' + href + ' not readable'); continue; }
+    let css = ''; try { css = vfs.readFileSync(resolvePath(href), 'utf8'); } catch (e) { log('index.html: stylesheet ' + href + ' not readable'); continue; }
     const dir = path.dirname(resolvePath(href));
     for (const m of css.matchAll(/@font-face\s*\{([^}]*)\}/gi)) {
       const fam = /font-family\s*:\s*([^;]+)/i.exec(m[1]), src = /url\(\s*(['"]?)(.*?)\1\s*\)/i.exec(m[1]);
@@ -1264,7 +1402,6 @@ async function bootIndexHtml() {
     const el = new FakeElement('script'); el.src = src; el.type = 'text/javascript'; bodyEl.appendChild(el);
   }
 }
-
 // ---------- once all scripts (core + plugins) have loaded ----------
 function onAllScriptsLoaded() {
   log('all scripts loaded: plugins ok ' + loadedPlugins.length + ', failed ' + failedPlugins.length);
@@ -1762,6 +1899,8 @@ async function audioTestStage() {
 
 function finish(code) {
   if (finish.done) return; finish.done = true;
+  try { if (globalThis.localStorage && globalThis.localStorage.flush) globalThis.localStorage.flush(); } catch (_) {}
+  try { if (globalThis.Worker && globalThis.Worker.terminateAll) globalThis.Worker.terminateAll(); } catch (_) {}
   if (PLAY) { console.log('play mode ended, code ' + code + ', input ' + JSON.stringify(inputStats) + ', otherErrors ' + otherErrors.length + (otherErrors.length ? '\n  ' + otherErrors.slice(0, 5).map(x => String(x).split('\n').slice(0, 2).join(' | ').slice(0, 300)).join('\n  ') : '')); try { pmz.shutdown(); } catch (e) {} proc.exit(code); }
   const f = (v, d) => (typeof v === 'number' ? v.toFixed(d === undefined ? 1 : d) : String(v));
   let out = 'pmzrun result (MB unless noted) - plain Node ' + proc.version + ', real PIXI ' + (typeof PIXI !== 'undefined' ? PIXI.VERSION : '?') + ' on pmzrt WebGL1 (' + (glInfo && glInfo.glRenderer) + ', ' + (glInfo && glInfo.glVersion) + ')\n';
@@ -1788,6 +1927,38 @@ function finish(code) {
   out += 'warnings (' + warnings.length + '): ' + warnings.map(x => x.slice(0, 200)).join(' | ') + '\n';
   out += 'failed plugins (' + failedPlugins.length + '):\n' + failedPlugins.map(x => '  ' + x).join('\n') + '\n';
   out += 'other errors (' + otherErrors.length + ', first 15):\n' + otherErrors.slice(0, 15).map(x => '  ' + String(x).split('\n').slice(0, 3).join(' | ').slice(0, 300)).join('\n') + '\n';
+  const muEnd = proc.memoryUsage();
+  const csStats = (typeof c2d !== 'undefined' && c2d.getImageSurfaceStats) ? c2d.getImageSurfaceStats() : { bytes: 0 };
+  const tracePayload = {
+    seed: AT_SEED || null,
+    engine: MV ? 'MV' : 'MZ',
+    plugins: loadedPlugins,
+    failed: failedPlugins,
+    titleScene: results.title && results.title.scene || null,
+    optionsScene: results.options && results.options.scene || null,
+    mapOpen: timings.mapInfoOpen || null,
+    mapEnd: timings.mapInfo || null,
+  };
+  const traceHash = crypto.createHash('sha256').update(JSON.stringify(tracePayload)).digest('hex').slice(0, 16);
+  const ciSummary = {
+    exitCode: code,
+    seed: AT_SEED || null,
+    engine: MV ? 'MV' : 'MZ',
+    glRenderer: glInfo ? glInfo.glRenderer : null,
+    plugins: loadedPlugins.length,
+    failed: failedPlugins.length,
+    glStubs: mainGL ? mainGL.stubs.size : 0,
+    rtStubs: runtimeStubs.size,
+    glErrors: glMessages.length,
+    otherErrors: otherErrors.length,
+    externalMB: +(muEnd.external / 1048576).toFixed(2),
+    glMemMB: mainGL ? +(mainGL._glMemBytes / 1048576).toFixed(2) : 0,
+    csCacheMB: +(csStats.bytes / 1048576).toFixed(2),
+    mapId: timings.mapInfo ? timings.mapInfo.mapId : null,
+    scene: (typeof SceneManager !== 'undefined' && SceneManager._scene && SceneManager._scene.constructor) ? SceneManager._scene.constructor.name : null,
+    traceHash,
+  };
+  out += 'CI_SUMMARY ' + JSON.stringify(ciSummary) + '\n';
   console.log('\n' + out);
   try { fs.writeFileSync(OUT, out); } catch (e) { console.log('cannot write ' + OUT + ': ' + e.message); }
   try { pmz.shutdown(); } catch (e) {}

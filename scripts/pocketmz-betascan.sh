@@ -4,6 +4,4 @@
 # Prints one line with the reason when β cannot (exit 1), nothing and exit 0 when no problem is found.
 #   - files β cannot decode yet: .gif (β natively decodes Ogg/M4A/MP3/AAC/WAV audio, MP4/WebM/OGV/MOV video, PNG/JPEG/WebP images)
 SRC="${1%/}"; [ -d "$SRC" ] || { echo "no game folder"; exit 1; }
-f=$(find "$SRC" -type f -iname '*.gif' -print -quit 2>/dev/null)
-[ -n "$f" ] && { echo "unsupported media file: ${f#$SRC/}"; exit 1; }
 exit 0

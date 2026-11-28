@@ -26,7 +26,7 @@
     const L = ui.startsWith("ja") ? {
         title: "PocketMZ メニュー", resume: "ゲームに戻る", fps: "フレームレート", speed: "速度",
         showFps: "FPS 表示", volume: "全体音量", scale: "描画解像度", scaleAuto: "画面に合わせる",
-        scaleOff: "ゲーム本来", smooth: "画面の平滑化", autosave: "オートセーブ/ロード", runtime: "実行環境", rtAuto: "自動（β 優先）", rtNow: "現在：", rtNext: "次回ゲーム起動から有効", rtNoBeta: "β 未インストール：NW.js を使います", stopEs: "起動中は ES を閉じる", next: "（次回起動から）", quit: "ゲームを終了", quitAsk: "ゲームを終了しますか？（セーブしていない進行は失われます）", quitAskAuto: "ゲームを終了しますか？（現在の進行を自動保存します）", autoLoaded: "セーブを自動読み込みしました",
+        scaleOff: "ゲーム本来", smooth: "画面の平滑化", compatMode: "互換モード", shader: "画面シェーダー", shaderOff: "オフ", autosave: "オートセーブ/ロード", runtime: "実行環境", rtAuto: "自動（β 優先）", rtNow: "現在：", rtNext: "次回ゲーム起動から有効", rtNoBeta: "β 未インストール：NW.js を使います", stopEs: "起動中は ES を閉じる", next: "（次回起動から）", quit: "ゲームを終了", quitAsk: "ゲームを終了しますか？（セーブしていない進行は失われます）", quitAskAuto: "ゲームを終了しますか？（現在の進行を自動保存します）", autoLoaded: "セーブを自動読み込みしました",
         yes: "終了", no: "戻る", on: "オン", off: "オフ", hint: "Select + X：PocketMZ メニュー",
         keys: "↑↓ 選択 · ←→ 変更 · A 決定 · B 戻る",
         backups: "セーブのバックアップ", noBackups: "バックアップはまだありません（ゲーム起動時に自動で作られます）",
@@ -43,7 +43,7 @@
     } : ui.startsWith("en") ? {
         title: "PocketMZ menu", resume: "Resume", fps: "Frame rate", speed: "Speed",
         showFps: "Show FPS", volume: "Master volume", scale: "Render resolution", scaleAuto: "Screen size",
-        scaleOff: "Game size", smooth: "Smooth scaling", autosave: "Auto save / load", runtime: "Runtime", rtAuto: "Auto (β default)", rtNow: "Now: ", rtNext: "Takes effect at the next game start", rtNoBeta: "β is not installed: NW.js will be used", stopEs: "Close ES while playing", next: " (next start)", quit: "Quit game", quitAsk: "Quit the game? (Unsaved progress is lost)", quitAskAuto: "Quit the game? (Current progress will be auto-saved)", autoLoaded: "Auto-loaded save",
+        scaleOff: "Game size", smooth: "Smooth scaling", compatMode: "Compatibility mode", shader: "Screen shader", shaderOff: "Off", autosave: "Auto save / load", runtime: "Runtime", rtAuto: "Auto (β default)", rtNow: "Now: ", rtNext: "Takes effect at the next game start", rtNoBeta: "β is not installed: NW.js will be used", stopEs: "Close ES while playing", next: " (next start)", quit: "Quit game", quitAsk: "Quit the game? (Unsaved progress is lost)", quitAskAuto: "Quit the game? (Current progress will be auto-saved)", autoLoaded: "Auto-loaded save",
         yes: "Quit", no: "Back", on: "On", off: "Off", hint: "Select + X: PocketMZ menu",
         keys: "↑↓ Select · ←→ Change · A OK · B Back",
         backups: "Save backups", noBackups: "No backups yet (made automatically when the game starts)",
@@ -60,7 +60,7 @@
     } : {
         title: "PocketMZ 菜单", resume: "继续游戏", fps: "帧率", speed: "加速",
         showFps: "显示帧数", volume: "总音量", scale: "渲染分辨率", scaleAuto: "按屏幕",
-        scaleOff: "游戏原始", smooth: "平滑画面", autosave: "自动保存/加载", runtime: "运行时", rtAuto: "自动（默认 β）", rtNow: "当前：", rtNext: "下次启动游戏生效", rtNoBeta: "β 未安装，将使用 NW.js", stopEs: "运行时关闭 ES（省内存）", next: "（下次启动生效）", quit: "退出游戏", quitAsk: "退出游戏？（没存档的进度会丢失）", quitAskAuto: "退出游戏？（将自动保存当前进度）", autoLoaded: "已自动加载存档",
+        scaleOff: "游戏原始", smooth: "平滑画面", compatMode: "兼容模式", shader: "画面滤镜", shaderOff: "关", autosave: "自动保存/加载", runtime: "运行时", rtAuto: "自动（默认 β）", rtNow: "当前：", rtNext: "下次启动游戏生效", rtNoBeta: "β 未安装，将使用 NW.js", stopEs: "运行时关闭 ES（省内存）", next: "（下次启动生效）", quit: "退出游戏", quitAsk: "退出游戏？（没存档的进度会丢失）", quitAskAuto: "退出游戏？（将自动保存当前进度）", autoLoaded: "已自动加载存档",
         yes: "退出", no: "返回", on: "开", off: "关", hint: "Select + X：PocketMZ 菜单",
         keys: "↑↓ 选择 · ←→ 调整 · A 确定 · B 返回",
         backups: "存档备份", noBackups: "还没有备份（每次启动游戏时自动备份）",
@@ -80,7 +80,10 @@
     const penv = (window.process && process.env) || {};
     const diskSet = {};
     try { if (SETTINGS && fs.existsSync(SETTINGS)) Object.assign(diskSet, JSON.parse(fs.readFileSync(SETTINGS, "utf8"))); } catch (e) {}
-    const set = Object.assign({ showFps: false, volume: 100, renderScale: "auto", autosave: false }, diskSet);
+    const set = Object.assign({ showFps: false, volume: 100, renderScale: "auto", autosave: false, compatMode: penv.POCKETMZ_COMPAT_MODE === "1", shader: penv.PMZ_SHADER || "off" }, diskSet);
+    const SHADER_OPTS = ["off", "sharp", "lcd", "crt", "cas"];
+    const SHADER_LABELS = { off: () => L.shaderOff, sharp: () => "Sharp Bilinear", lcd: () => "LCD Grid", crt: () => "CRT", cas: () => "CAS" };
+    const shaderLabel = v => (SHADER_LABELS[v] ? SHADER_LABELS[v]() : L.shaderOff);
     if (penv.POCKETMZ_ES_SHOW_FPS === "1" || penv.POCKETMZ_ES_SHOW_FPS === "0") set.showFps = penv.POCKETMZ_ES_SHOW_FPS === "1";
     if (penv.POCKETMZ_ES_RENDER_SCALE === "auto" || penv.POCKETMZ_ES_RENDER_SCALE === "off") set.renderScale = penv.POCKETMZ_ES_RENDER_SCALE;
     if (penv.POCKETMZ_ES_SMOOTH === "1" || penv.POCKETMZ_ES_SMOOTH === "0") set.smooth = penv.POCKETMZ_ES_SMOOTH === "1";
@@ -338,6 +341,8 @@
         { k: "runtime", label: L.runtime, v: rtName(rtEff()) },
         { k: "scale", label: L.scale + L.next, v: set.renderScale === "off" ? L.scaleOff : L.scaleAuto },
         { k: "smooth", label: L.smooth, v: smoothEff() ? L.on : L.off },
+        { k: "shader", label: L.shader, v: shaderLabel(set.shader) },
+        { k: "compatMode", label: L.compatMode + L.next, v: set.compatMode ? L.on : L.off },
         { k: "autosave", label: L.autosave, v: set.autosave ? L.on : L.off },
         { k: "stopES", label: L.stopEs + L.next, v: set.stopES ? L.on : L.off },
         { k: "keymap", label: L.keymap },
@@ -419,6 +424,8 @@
         else if (k === "volume") { set.volume = Math.max(0, Math.min(100, set.volume + (d || 1) * 10)); applyVolume(); save("volume"); }
         else if (k === "scale") { set.renderScale = set.renderScale === "off" ? "auto" : "off"; save("renderScale"); }
         else if (k === "smooth") { set.smooth = !smoothEff(); save("smooth"); if (typeof window.PMZ_applySmooth === "function") window.PMZ_applySmooth(set.smooth); }
+        else if (k === "shader") { set.shader = SHADER_OPTS[(SHADER_OPTS.indexOf(set.shader) + (d || 1) + SHADER_OPTS.length) % SHADER_OPTS.length]; save("shader"); if (typeof window.PMZ_applyShader === "function") window.PMZ_applyShader(set.shader); }
+        else if (k === "compatMode") { set.compatMode = !set.compatMode; save("compatMode"); }
         else if (k === "autosave") { set.autosave = !set.autosave; save("autosave"); }
         else if (k === "stopES") { set.stopES = !set.stopES; save("stopES"); }
         else if (k === "runtime" && HAS_NW) { set.runtime = RT_OPTS[(RT_OPTS.indexOf(rtEff()) + (d || 1) + RT_OPTS.length) % RT_OPTS.length]; rtChanged = true; save("runtime"); }

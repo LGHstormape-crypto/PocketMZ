@@ -6,7 +6,7 @@
 # beta-mount.sh umount  -> unmount rt (and everything bound below it) and its image; used by pocketmz-install.sh before the image is replaced
 # beta-mount.sh root    -> /storage/pocketmz/beta/root    DEV (Debian trixie rootfs dir + β upper: Node 20, gcc, SDL, cairo ...)
 # beta-mount.sh root24  -> /storage/pocketmz/beta/root24  DEV (the above + upper24: Node 24 from Debian forky)
-RZ=/storage/pocketmz; B=$RZ/beta; N=${1:-root}
+RZ="${POCKETMZ_DATA:-/storage/pocketmz}"; B="$RZ/beta"; N=${1:-root}
 IMG=$RZ/beta-runtime.sqfs
 case "$N" in
   auto) if [ -f "$IMG" ]; then N=rt; elif [ -d $B/upper24 ]; then N=root24; else echo "no β runtime installed" >&2; exit 1; fi ;;
@@ -30,7 +30,9 @@ case "$N" in
         [ "$BF" = "$(readlink -f "$IMG")" ] || rt_umount
       fi
       mkdir -p "$R"
-      is_mounted "$R" || mount -t squashfs -o loop,ro "$IMG" "$R" || exit 1
+      if ! is_mounted "$R"; then
+        mount -t squashfs -o loop,ro "$IMG" "$R" || { echo "beta-mount: squashfs mount failed for $IMG (kernel $(uname -r))" >&2; exit 1; }
+      fi
       echo "$R"; exit 0
     fi
     # α image: the same mount pocketmz-chroot.sh uses (root-sqfs); without rootfs.sqfs fall back to the maintenance dir
@@ -46,11 +48,13 @@ case "$N" in
       [ "$BF" = "$(readlink -f $IMG)" ] || rt_umount
     fi
     mkdir -p $B/rt-img $R
-    is_mounted $B/rt-img || mount -t squashfs -o loop,ro $IMG $B/rt-img || exit 1
+    if ! is_mounted $B/rt-img; then
+      mount -t squashfs -o loop,ro $IMG $B/rt-img || { echo "beta-mount: squashfs mount failed for $IMG (kernel $(uname -r))" >&2; exit 1; }
+    fi
     is_mounted $R || mount -t overlay overlay -o lowerdir=$B/rt-img:$LOW $R || exit 1
     echo "$R"; exit 0 ;;
-  root)   O="lowerdir=/storage/pocketmz/rootfs,upperdir=$B/upper,workdir=$B/work" ;;
-  root24) O="lowerdir=$B/upper:/storage/pocketmz/rootfs,upperdir=$B/upper24,workdir=$B/work24" ;;
+  root)   O="lowerdir=$RZ/rootfs,upperdir=$B/upper,workdir=$B/work" ;;
+  root24) O="lowerdir=$B/upper:$RZ/rootfs,upperdir=$B/upper24,workdir=$B/work24" ;;
   *) echo "unknown root $N" >&2; exit 1 ;;
 esac
 grep -q " $R " /proc/mounts || mount -t overlay overlay -o "$O" "$R" || exit 1

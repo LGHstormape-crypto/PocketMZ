@@ -17,7 +17,24 @@ same as pocketmz-scan.sh, so saves in /storage/pocketmz/games/<id>/ match).
 import hashlib, json, os, re, sys, time
 
 RZ = os.environ.get("POCKETMZ_DATA", "/storage/pocketmz")   # data dir (games/<id>/run.log)
-ROOTS = [("rpgmaker", "/storage/roms/rpgmaker"), ("easyrpg", "/storage/roms/easyrpg")]
+def _detect_roots():
+    base = os.environ.get("POCKETMZ_ROMS", "").strip()
+    cands = [base] if base else []
+    cands += ["/storage/roms", "/mnt/sdcard/Roms", "/mnt/sdcard/roms", "/mnt/mmc/Roms", "/mnt/mmc/roms", "/roms"]
+    out = []
+    seen = set()
+    for b in cands:
+        if not b or not os.path.isdir(b):
+            continue
+        for kind, names in [("rpgmaker", ("rpgmaker", "RPGMAKER", "RpgMaker")), ("easyrpg", ("easyrpg", "EASYRPG", "EasyRPG"))]:
+            for n in names:
+                p = os.path.join(b, n)
+                rp = os.path.realpath(p)
+                if os.path.isdir(p) and rp not in seen:
+                    seen.add(rp)
+                    out.append((kind, p))
+    return out or [("rpgmaker", "/storage/roms/rpgmaker"), ("easyrpg", "/storage/roms/easyrpg")]
+ROOTS = _detect_roots()
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(RZ, "launcher", "library")
 SKIP = {"img", "audio", "movies", "effects", "fonts", "save", "locales", "swiftshader", "data", "js", "css", "icon",
         # asset folders of RPG Maker 2000/2003 games (EasyRPG) living in the same roms folders

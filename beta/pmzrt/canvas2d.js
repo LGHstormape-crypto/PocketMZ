@@ -28,11 +28,63 @@ function create(o) {
   class CanvasPattern { constructor(p) { this._p = p; } setTransform() {} }
 
   // native surface of a drawImage / createPattern source (our Image, a canvas, ImageData)
+  const rawCsMax = o.csCacheMaxBytes !== undefined ? Number(o.csCacheMaxBytes) : 20 * 1024 * 1024;
+  const csCacheMaxBytes = rawCsMax > 0 ? Math.max(1024 * 1024, Math.floor(rawCsMax)) : 0;
+  const csLru = new Map();
+  let csBytes = 0;
+  function dropImageSurface(src) {
+    if (!src) return;
+    const prev = csLru.get(src);
+    if (prev) { csLru.delete(src); csBytes -= prev; }
+    src._cs = null;
+    src._csPix = null;
+  }
+  function trimImageSurfaces(targetBytes) {
+    const tgt = Math.max(0, Number(targetBytes) || 0);
+    let evicted = 0;
+    for (const [old, b] of csLru) {
+      if (csBytes <= tgt) break;
+      csLru.delete(old);
+      csBytes -= b;
+      evicted += b;
+      old._cs = null;
+      old._csPix = null;
+    }
+    return evicted;
+  }
+  function getImageSurfaceStats() {
+    return { count: csLru.size, bytes: csBytes, maxBytes: csCacheMaxBytes };
+  }
   function nativeOf(src) {
     if (!src) return null;
     if (src.tagName === 'CANVAS') return src._ensure();
     if (src._pix) {
-      if (!src._cs || src._csPix !== src._pix) { src._cs = pmz.cvFromRGBA(src._pix.data, src._pix.width, src._pix.height); src._csPix = src._pix; }
+      if (src._cs && src._csPix === src._pix) {
+        if (csLru.has(src)) {
+          const b = csLru.get(src);
+          csLru.delete(src);
+          csLru.set(src, b);
+        }
+        return src._cs;
+      }
+      dropImageSurface(src);
+      const cs = pmz.cvFromRGBA(src._pix.data, src._pix.width, src._pix.height);
+      if (csCacheMaxBytes <= 0) return cs;
+      src._cs = cs;
+      src._csPix = src._pix;
+      const bytes = (src._pix.width | 0) * (src._pix.height | 0) * 4;
+      if (cs && bytes > 0) {
+        csLru.set(src, bytes);
+        csBytes += bytes;
+        for (const [old, b] of csLru) {
+          if (csBytes <= csCacheMaxBytes) break;
+          if (old === src) continue;
+          csLru.delete(old);
+          csBytes -= b;
+          old._cs = null;
+          old._csPix = null;
+        }
+      }
       return src._cs;
     }
     if (src.data && src.width && src.height && !src.tagName) return pmz.cvFromRGBA(src.data, src.width, src.height);   // ImageData: temporary
@@ -306,7 +358,7 @@ function create(o) {
     addEventListener() {}, removeEventListener() {},
   };
 
-  return { HTMLCanvasElement, CanvasRenderingContext2D, ImageData, CanvasGradient, CanvasPattern, FontFace, fontSet, nativeOf };
+  return { HTMLCanvasElement, CanvasRenderingContext2D, ImageData, CanvasGradient, CanvasPattern, FontFace, fontSet, nativeOf, dropImageSurface, trimImageSurfaces, getImageSurfaceStats };
 }
 
 module.exports = { create };

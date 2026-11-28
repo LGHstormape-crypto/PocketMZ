@@ -18,7 +18,7 @@ cd "$RZ"
 LIST=""
 [ "$BETA_ONLY" = 1 ] || LIST="rootfs.sqfs"
 for f in beta-runtime.sqfs VERSION patches launcher vendor ports README.md LICENSE THIRD-PARTY.txt pocketmz.gptk \
-         pocketmz-run.sh pocketmz-menu.sh pocketmz-mkgame.sh pocketmz-chroot.sh pocketmz-install.sh pocketmz-maint.sh \
+         pocketmz-env.sh pocketmz-run.sh pocketmz-menu.sh pocketmz-mkgame.sh pocketmz-chroot.sh pocketmz-install.sh pocketmz-maint.sh \
          pocketmz-uninstall.sh pocketmz-betascan.sh pocketmz-pack.sh pocketmz-licenses.sh \
          pocketmz-launcher.py pocketmz-library.py pocketmz-pad.py pocketmz-fonts.py \
          beta/beta-mount.sh beta/run-pmzrun.sh beta/beta-version.sh; do
@@ -26,6 +26,8 @@ for f in beta-runtime.sqfs VERSION patches launcher vendor ports README.md LICEN
   LIST="$LIST $f"
 done
 [ -f pocketmz-probe.py ] && LIST="$LIST pocketmz-probe.py"
+[ -f pocketmz-cache-trim.py ] && LIST="$LIST pocketmz-cache-trim.py"
+[ -f pocketmz-sysinfo.sh ] && LIST="$LIST pocketmz-sysinfo.sh"
 tar -cf "$OUT" --exclude=launcher/library --exclude=launcher/dev-sample --exclude=patches/PocketMZ_Debug.js $LIST
 cp "$RZ/VERSION" "$PORTS/PocketMZ/VERSION"
 cp "$RZ/ports/PocketMZ.sh" "$PORTS/PocketMZ.sh"

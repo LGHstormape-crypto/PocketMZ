@@ -4,9 +4,10 @@
 # Existing games/ (saves), home/ (browser profile) and rootfs/ are kept.
 # Includes β runtime (beta-runtime.sqfs + beta/*.sh) and NW.js fallback (rootfs.sqfs).
 set -e
-RZ=/storage/pocketmz
 FROM=$(cd "$(dirname "$0")" && pwd)
 . /etc/profile >/dev/null 2>&1 || true
+[ -f "$FROM/pocketmz-env.sh" ] && . "$FROM/pocketmz-env.sh" || true
+RZ="${POCKETMZ_DATA:-/storage/pocketmz}"
 if pidof nw >/dev/null 2>&1 || pidof node >/dev/null 2>&1; then
   echo "a game is running - quit it first" >&2
   exit 1
@@ -33,7 +34,7 @@ if [ "$FROM" != "$RZ" ]; then
     rm -rf "$RZ/$n.new"; cp -a "$f" "$RZ/$n.new"; rm -rf "$RZ/$n"; mv "$RZ/$n.new" "$RZ/$n"
   done
 fi
-chmod +x "$RZ"/*.sh 2>/dev/null || true
+chmod +x "$RZ"/*.sh "$RZ"/beta/*.sh 2>/dev/null || true
 if [ -f "$RZ/beta-runtime.sqfs" ] && [ -f "$RZ/rootfs.sqfs" ]; then
   echo "Dual-core runtime installed (default: auto -> β first, NW.js fallback)"
 elif [ -f "$RZ/beta-runtime.sqfs" ]; then
@@ -41,5 +42,6 @@ elif [ -f "$RZ/beta-runtime.sqfs" ]; then
 fi
 rm -f "$RZ/dev"                      # release mode: no debug REPL plugin in the games
 rm -f "$RZ/pocketmz-hotkeys.py" "$RZ/gkd-thermal" "$RZ/pocketmz-scan.sh" "$RZ/pocketmz-bootstrap.sh" "$RZ/pocketmz-settings.py"
-mkdir -p /storage/roms/rpgmaker
-echo "installed in $RZ. Put MV/MZ game folders in /storage/roms/rpgmaker and start PocketMZ from Ports."
+ROMS_BASE="${POCKETMZ_ROMS:-/storage/roms}"
+mkdir -p "$ROMS_BASE/rpgmaker" 2>/dev/null || true
+echo "installed in $RZ (roms=$ROMS_BASE). Put MV/MZ game folders in $ROMS_BASE/rpgmaker and start PocketMZ from Ports."
